@@ -1,10 +1,25 @@
-"""Página 📊 Dashboard — KPIs e análise visual dos resultados."""
+"""Página 📊 Dashboard — KPIs e análise visual dos resultados.
+
+Os números exibidos consideram o **canal ativo** selecionado na sidebar,
+já que são os resultados já calculados (``st.session_state['resultados']``)
+que derivam dele.
+"""
 import streamlit as st
 import pandas as pd
+
+from utils.estado import canal_ativo
 
 
 def render() -> None:
     st.title("📊 Dashboard")
+
+    canal = canal_ativo()
+    if canal is None:
+        st.warning("Nenhum canal de venda cadastrado. Cadastre um canal em "
+                   "**🛒 Canais de Venda** primeiro.")
+        st.stop()
+
+    st.caption(f"Canal ativo: **{canal.nome}**")
 
     resultados = st.session_state["resultados"]
     if not resultados:
@@ -30,10 +45,13 @@ def render() -> None:
 
     st.divider()
 
+    meta_margem = float(canal.margem_lucro_desejada) / 100
     c1, c2 = st.columns(2)
     with c1:
-        st.metric("Margem Líquida Média", f"{avg_margem*100:.1f}%",
-                  delta=f"{(avg_margem - float(st.session_state['params'].margem_lucro_desejada)/100)*100:.1f}% vs meta")
+        st.metric(
+            "Margem Líquida Média", f"{avg_margem*100:.1f}%",
+            delta=f"{(avg_margem - meta_margem)*100:.1f}% vs meta do canal",
+        )
     with c2:
         st.metric("Markup Médio s/ Custo", f"{avg_markup*100:.1f}%")
 
@@ -65,18 +83,18 @@ def render() -> None:
 
     componentes = {
         "Custo do Produto":  avg_custo,
-        "Custos Operac.":    float(params.custo_fixo_total_pedido),
-        "Impostos (DAS)":    preco_med * float(params.perc_impostos_venda),
-        "Comissão+Gateway":  preco_med * float(params.perc_operacional_venda),
-        "Custo Financeiro":  preco_med * float(params.perc_financeiro),
-        "Devoluções":        preco_med * float(params.perc_devolucao),
+        "Custos Operac.":    float(canal.custo_fixo_total_pedido),
+        "Impostos":          preco_med * float(params.perc_impostos_venda),
+        "Comissão+Gateway":  preco_med * float(canal.perc_operacional_venda),
+        "Custo Financeiro":  preco_med * float(canal.perc_financeiro),
+        "Devoluções":        preco_med * float(canal.perc_devolucao),
         "Lucro Líquido":     preco_med - avg_custo
-                             - float(params.custo_fixo_total_pedido)
+                             - float(canal.custo_fixo_total_pedido)
                              - preco_med * float(
                                  params.perc_impostos_venda
-                                 + params.perc_operacional_venda
-                                 + params.perc_financeiro
-                                 + params.perc_devolucao),
+                                 + canal.perc_operacional_venda
+                                 + canal.perc_financeiro
+                                 + canal.perc_devolucao),
     }
     df_comp = pd.DataFrame([
         {"Componente": k, "R$ Médio": round(v, 2),

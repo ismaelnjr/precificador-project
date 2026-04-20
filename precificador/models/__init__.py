@@ -1,3 +1,3 @@
-from .produto import Produto, ParametrosGlobais, ResultadoPrecificacao
+from .produto import CanalVenda, ParametrosGlobais, Produto, ResultadoPrecificacao
 
-__all__ = ["Produto", "ParametrosGlobais", "ResultadoPrecificacao"]
+__all__ = ["CanalVenda", "ParametrosGlobais", "Produto", "ResultadoPrecificacao"]

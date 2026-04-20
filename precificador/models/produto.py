@@ -4,10 +4,13 @@ models/produto.py
 Modelos de domínio do Precificador E-commerce.
 
 Hierarquia:
-    ParametrosGlobais     → configurações da empresa (regime, canal, taxas, margem)
+    ParametrosGlobais     → configurações globais da empresa (regime + defaults
+                            fiscais). Seções A e E.
+    CanalVenda            → configurações por canal de venda (taxas, custos
+                            operacionais, financeiro e margem). Seções B, C, D, F.
     Produto               → item do cadastro, com código interno alfanumérico e
                             parâmetros fiscais individuais (None = usa o global)
-    ResultadoPrecificacao → output calculado para um Produto
+    ResultadoPrecificacao → output calculado para um Produto em um Canal
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -47,39 +50,20 @@ def _round4(v: Decimal) -> Decimal:
 @dataclass
 class ParametrosGlobais:
     """
-    Configurações da empresa — único conjunto global compartilhado por todos os
-    produtos. Cada produto pode sobrescrever qualquer campo fiscal via campos
-    opcionais em ``Produto``.
+    Configurações *globais da empresa* — regime tributário (A) e defaults
+    fiscais (E). As taxas que variam por canal de venda (B/C/D/F) ficam em
+    :class:`CanalVenda`.
     """
-    # Regime tributário
+    # ── A · Regime tributário e impostos ─────────────────────────────────────
     regime: str = "Simples Nacional"           # "Simples Nacional" | "Lucro Presumido" | "Lucro Real"
     aliq_das: float = 6.0                      # % — alíquota efetiva DAS (Simples) ou carga fed.
     aliq_icms_proprio: float = 0.0             # % — ICMS próprio s/ venda (0 no Simples)
     aliq_icms_interna_destino: float = 18.0    # % — alíquota interna do meu estado (p/ DIFAL na entrada)
 
-    # Canal de venda
-    canal: str = "Marketplace"
-    aliq_comissao: float = 14.0                # % — comissão marketplace / intermediação
-    aliq_gateway: float = 2.0                  # % — antifraude / gateway pagamento
-
-    # Custos operacionais fixos (por pedido)
-    custo_embalagem: float = 2.50              # R$
-    custo_picking: float = 3.00                # R$
-    custo_fixo_rateado: float = 5.00           # R$
-    custo_frete_absorvido: float = 0.00        # R$ — frete absorvido pelo vendedor
-
-    # Devoluções
-    aliq_devolucao: float = 1.0                # %
-
-    # Custo financeiro / parcelamento
-    prazo_recebimento_dias: int = 14           # dias para receber do marketplace
-    taxa_capital_mensal: float = 1.5           # % ao mês
-    parcelas_sem_juros: int = 3                # parcelas absorvidas pelo vendedor
-
-    # ── Defaults fiscais globais (podem ser sobrescritos por produto) ─────────
+    # ── E · Defaults fiscais globais (podem ser sobrescritos por produto) ────
     tem_difal: bool = False
-    aliq_difal: float = 4.0
-    aliq_fcp: float = 2.0
+    aliq_difal: float = 6.0
+    aliq_fcp: float = 0.0
 
     tem_st: bool = False
     aliq_st: float = 0.0
@@ -87,20 +71,85 @@ class ParametrosGlobais:
     tem_antecipacao: bool = False
     aliq_antecipacao: float = 0.0
 
-    # Créditos fiscais na compra (dependem do regime)
     credita_icms: bool = False
     aliq_credito_icms: float = 0.0
     credita_pis_cofins: bool = False
     aliq_credito_pis_cofins: float = 9.25
-
-    # Margem global
-    margem_lucro_desejada: float = 15.0        # %
 
     # ── Propriedades calculadas ───────────────────────────────────────────────
 
     @property
     def perc_impostos_venda(self) -> Decimal:
         return _pct(self.aliq_das) + _pct(self.aliq_icms_proprio)
+
+    def resumo(self) -> dict:
+        return {
+            "Regime Tributário":                  self.regime,
+            "% Impostos s/ Venda (DAS + ICMS)":   f"{float(self.perc_impostos_venda)*100:.2f}%",
+            "Alíq. Interna do Estado":            f"{float(self.aliq_icms_interna_destino):.2f}%",
+            "Tem DIFAL (default)":                "Sim" if self.tem_difal else "Não",
+            "Tem ST (default)":                   "Sim" if self.tem_st else "Não",
+            "Tem Antecipação (default)":          "Sim" if self.tem_antecipacao else "Não",
+            "Credita ICMS":                       "Sim" if self.credita_icms else "Não",
+            "Credita PIS/COFINS":                 "Sim" if self.credita_pis_cofins else "Não",
+        }
+
+    @staticmethod
+    def creditos_permitidos(regime: str) -> dict[str, bool]:
+        """
+        Regras de aproveitamento de crédito de compra por regime:
+          Simples Nacional: nenhum.
+          Lucro Presumido : apenas ICMS.
+          Lucro Real      : ICMS e PIS/COFINS.
+        """
+        r = (regime or "").strip().lower()
+        if r == "lucro real":
+            return {"icms": True, "pis_cofins": True}
+        if r == "lucro presumido":
+            return {"icms": True, "pis_cofins": False}
+        return {"icms": False, "pis_cofins": False}
+
+
+# ─── Canal de Venda ───────────────────────────────────────────────────────────
+
+@dataclass
+class CanalVenda:
+    """
+    Cadastro de canal de venda. Agrupa as configurações que variam por canal:
+
+      - B · Taxas do canal: ``aliq_comissao``, ``aliq_gateway``.
+      - C · Custos operacionais fixos por pedido: embalagem, picking, fixo
+        rateado, frete absorvido e devolução.
+      - D · Custo financeiro e parcelamento: prazo de recebimento,
+        taxa de capital mensal, parcelas sem juros.
+      - F · Margem de lucro desejada.
+    """
+    nome: str = "Padrão"
+    ativo: bool = True
+
+    # Identificador persistido (preenchido pelos mapeadores/repos).
+    id: Optional[int] = None
+
+    # ── B · Taxas do canal ───────────────────────────────────────────────────
+    aliq_comissao: float = 14.0                # % — comissão marketplace / intermediação
+    aliq_gateway: float = 2.0                  # % — antifraude / gateway pagamento
+
+    # ── C · Custos operacionais fixos (por pedido) ───────────────────────────
+    custo_embalagem: float = 2.50              # R$
+    custo_picking: float = 3.00                # R$
+    custo_fixo_rateado: float = 5.00           # R$
+    custo_frete_absorvido: float = 0.00        # R$ — frete absorvido pelo vendedor
+    aliq_devolucao: float = 1.0                # % — perda estimada por devolução
+
+    # ── D · Custo financeiro / parcelamento ──────────────────────────────────
+    prazo_recebimento_dias: int = 14           # dias para receber do canal
+    taxa_capital_mensal: float = 1.5           # % ao mês
+    parcelas_sem_juros: int = 3                # parcelas absorvidas pelo vendedor
+
+    # ── F · Margem desejada do canal ─────────────────────────────────────────
+    margem_lucro_desejada: float = 15.0        # %
+
+    # ── Propriedades calculadas ───────────────────────────────────────────────
 
     @property
     def perc_operacional_venda(self) -> Decimal:
@@ -128,47 +177,36 @@ class ParametrosGlobais:
 
     @property
     def total_deducoes_sobre_venda(self) -> Decimal:
+        """Soma percentual (sem impostos da empresa) das deduções do canal."""
         return (
-            self.perc_impostos_venda
-            + self.perc_operacional_venda
+            self.perc_operacional_venda
             + self.perc_devolucao
             + self.perc_financeiro
             + _pct(self.margem_lucro_desejada)
         )
 
-    def resumo(self) -> dict:
+    def resumo(self, params: Optional[ParametrosGlobais] = None) -> dict:
+        """
+        Resumo das cargas do canal. Se ``params`` for informado, inclui
+        também a carga de impostos da empresa e o markup mínimo combinado.
+        """
+        perc_impostos = (
+            params.perc_impostos_venda if params is not None else Decimal("0")
+        )
+        total = perc_impostos + self.total_deducoes_sobre_venda
+        denom = 1 - total
+        markup_min = (1 / denom) - 1 if denom > 0 else Decimal("0")
         return {
-            "% Impostos s/ Venda (DAS + ICMS)": f"{float(self.perc_impostos_venda)*100:.2f}%",
+            "Canal":                             self.nome,
             "% Comissão + Gateway":              f"{float(self.perc_operacional_venda)*100:.2f}%",
             "% Custo Financeiro":                f"{float(self.perc_financeiro)*100:.2f}%",
             "% Devoluções":                      f"{float(self.perc_devolucao)*100:.2f}%",
             "% Margem Desejada":                 f"{float(_pct(self.margem_lucro_desejada))*100:.2f}%",
-            "Total % s/ Venda":                  f"{float(self.total_deducoes_sobre_venda)*100:.2f}%",
             "Custo Fixo / Pedido (R$)":          f"R$ {float(self.custo_fixo_total_pedido):.2f}",
-            "Markup Mínimo s/ Custo":            f"{float(self.markup_minimo_global)*100:.2f}%",
+            "% Impostos (empresa)":              f"{float(perc_impostos)*100:.2f}%",
+            "Total % s/ Venda":                  f"{float(total)*100:.2f}%",
+            "Markup Mínimo s/ Custo":            f"{float(markup_min)*100:.2f}%",
         }
-
-    @property
-    def markup_minimo_global(self) -> Decimal:
-        denom = 1 - self.total_deducoes_sobre_venda
-        if denom <= 0:
-            return Decimal("0")
-        return (1 / denom) - 1
-
-    @staticmethod
-    def creditos_permitidos(regime: str) -> dict[str, bool]:
-        """
-        Regras de aproveitamento de crédito de compra por regime:
-          Simples Nacional: nenhum.
-          Lucro Presumido : apenas ICMS.
-          Lucro Real      : ICMS e PIS/COFINS.
-        """
-        r = (regime or "").strip().lower()
-        if r == "lucro real":
-            return {"icms": True, "pis_cofins": True}
-        if r == "lucro presumido":
-            return {"icms": True, "pis_cofins": False}
-        return {"icms": False, "pis_cofins": False}
 
 
 # ─── Produto ──────────────────────────────────────────────────────────────────
@@ -180,7 +218,8 @@ class Produto:
 
     Todo campo fiscal ``Optional`` é resolvido pela regra:
         - se definido (não ``None``) → usa o valor do produto;
-        - se ``None`` → usa o valor de ``ParametrosGlobais``.
+        - se ``None`` → usa o valor de ``ParametrosGlobais`` (campos fiscais) ou
+          de ``CanalVenda`` (margem).
 
     Os ``vinculos_fornecedor`` permitem mapear (CNPJ + código do fornecedor)
     ao produto na hora de importar XML de NF-e, permitindo reutilizar o
@@ -214,7 +253,7 @@ class Produto:
     aliq_credito_pis_cofins: Optional[float] = None
 
     aliq_icms_interna: Optional[float] = None
-    margem_desejada: Optional[float] = None
+    margem_desejada: Optional[float] = None   # override que sobrescreve a margem do canal
 
     # ── Vínculos com fornecedores (para matching em XML de NF-e) ────────────
     # Cada vínculo: {"cnpj": "12345678000199", "cod_fornecedor": "ABC123"}
@@ -278,8 +317,9 @@ class Produto:
         return float(self._resolve(
             self.aliq_icms_interna, params.aliq_icms_interna_destino))
 
-    def resolver_margem(self, params: ParametrosGlobais) -> Decimal:
-        m = self._resolve(self.margem_desejada, params.margem_lucro_desejada)
+    def resolver_margem(self, canal: CanalVenda) -> Decimal:
+        """Resolve a margem desejada: override do produto sobrescreve a margem do canal."""
+        m = self._resolve(self.margem_desejada, canal.margem_lucro_desejada)
         return _pct(m)
 
     # ── Cálculo fiscal de entrada ────────────────────────────────────────────
@@ -390,11 +430,17 @@ class Produto:
 @dataclass
 class ResultadoPrecificacao:
     """
-    Output completo do cálculo de preço para um Produto.
+    Output completo do cálculo de preço para um Produto em um Canal.
     Armazena todos os componentes intermediários para transparência.
+
+    O ``preco_praticado_inicial`` é o valor lido de ``produto_canal_preco``
+    para o par (produto, canal). Quando ``None``, o preço praticado começa
+    igual ao preço mínimo calculado.
     """
     produto: Produto
     params: ParametrosGlobais
+    canal: CanalVenda
+    preco_praticado_inicial: Optional[float] = None
 
     custo_base: Decimal             = field(init=False)
     encargos_entrada: dict          = field(init=False)
@@ -418,6 +464,7 @@ class ResultadoPrecificacao:
     def __post_init__(self):
         p = self.produto
         g = self.params
+        c = self.canal
 
         self.custo_base = p.custo_base
         self.encargos_entrada = p.calcular_custos_fiscais_entrada(self.custo_base, g)
@@ -425,13 +472,13 @@ class ResultadoPrecificacao:
         self.custo_fiscal = self.encargos_entrada["total_encargos"]
         self.custo_final  = _round4(self.custo_base + self.custo_fiscal)
 
-        self.custo_fixo_pedido = g.custo_fixo_total_pedido
+        self.custo_fixo_pedido = c.custo_fixo_total_pedido
 
         self.perc_impostos    = g.perc_impostos_venda
-        self.perc_operacional = g.perc_operacional_venda
-        self.perc_financeiro  = g.perc_financeiro
-        self.perc_devolucao   = g.perc_devolucao
-        self.margem_desejada  = p.resolver_margem(g)
+        self.perc_operacional = c.perc_operacional_venda
+        self.perc_financeiro  = c.perc_financeiro
+        self.perc_devolucao   = c.perc_devolucao
+        self.margem_desejada  = p.resolver_margem(c)
 
         self.total_deducoes = (
             self.perc_impostos
@@ -449,7 +496,11 @@ class ResultadoPrecificacao:
         else:
             self.preco_minimo = Decimal("0")
 
-        self.preco_praticado = self.preco_minimo
+        if (self.preco_praticado_inicial is not None
+                and self.preco_praticado_inicial > 0):
+            self.preco_praticado = _round2(_d(self.preco_praticado_inicial))
+        else:
+            self.preco_praticado = self.preco_minimo
         self._recalcular_metricas()
 
     def _recalcular_metricas(self):
@@ -474,7 +525,12 @@ class ResultadoPrecificacao:
             self.margem_liquida_real = Decimal("0")
 
     def aplicar_preco_praticado(self, preco: float):
+        """Atualiza o preço praticado (em memória) e recalcula métricas."""
         self.preco_praticado = _d(preco)
+        try:
+            self.preco_praticado_inicial = float(self.preco_praticado)
+        except (TypeError, ValueError):
+            pass
         self._recalcular_metricas()
 
     @property
@@ -491,6 +547,7 @@ class ResultadoPrecificacao:
             "Código":               self.produto.codigo_interno,
             "Produto":              self.produto.descricao,
             "NCM":                  self.produto.ncm,
+            "Canal":                self.canal.nome,
             "Custo Base (R$)":      float(self.custo_base),
             "DIFAL (R$)":           float(self.encargos_entrada.get("difal", 0)),
             "FCP (R$)":             float(self.encargos_entrada.get("fcp", 0)),

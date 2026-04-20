@@ -1,14 +1,19 @@
-"""Página ⚙️ Parâmetros Globais — configurações compartilhadas por todos os produtos."""
+"""Página ⚙️ Parâmetros Globais — configurações fiscais globais da empresa.
+
+Cobre apenas as seções A (regime tributário e impostos) e E (defaults fiscais
+que podem ser sobrescritos por produto). As configurações B/C/D/F (taxas,
+custos operacionais, financeiro e margem) ficam no cadastro de Canais de Venda.
+"""
 import streamlit as st
 
 from models.produto import ParametrosGlobais
-from utils.estado import recalcular_resultados
+from utils.estado import atualizar_params
 
 
 def render() -> None:
     st.title("⚙️ Parâmetros Globais")
-    st.caption("Configurações compartilhadas por todos os produtos. "
-               "Cada produto pode sobrescrever individualmente os campos fiscais.")
+    st.caption("Configurações fiscais globais da empresa. Taxas do canal de venda, "
+               "custos operacionais, financeiro e margem ficam em **🛒 Canais de Venda**.")
 
     p: ParametrosGlobais = st.session_state["params"]
 
@@ -53,60 +58,6 @@ def render() -> None:
 
         st.divider()
 
-        # ── B: Canal de venda ────────────────────────────────────────────────
-        st.subheader("B · Canal de Venda e Taxas")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            canal = st.selectbox("Canal de Venda",
-                ["Marketplace","Loja Própria","Ambos"],
-                index=["Marketplace","Loja Própria","Ambos"].index(p.canal))
-        with c2:
-            aliq_comissao = st.number_input(
-                "Comissão / Taxa de Intermediação (%)",
-                0.0, 50.0, float(p.aliq_comissao), 0.5, "%.2f",
-                help="ML Clássico=14% | ML Premium=16% | Shopee≈12% | Amazon≈15%")
-        with c3:
-            aliq_gateway = st.number_input(
-                "Gateway / Antifraude (%)",
-                0.0, 10.0, float(p.aliq_gateway), 0.1, "%.2f",
-                help="Geralmente 1,5% a 3% sobre o valor da venda.")
-
-        st.divider()
-
-        # ── C: Custos operacionais ───────────────────────────────────────────
-        st.subheader("C · Custos Operacionais Fixos por Pedido")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            custo_embal = st.number_input("Embalagem (R$)",  0.0, 500.0, float(p.custo_embalagem),  0.5, "%.2f")
-        with c2:
-            custo_pick  = st.number_input("Picking (R$)",    0.0, 500.0, float(p.custo_picking),    0.5, "%.2f")
-        with c3:
-            custo_fix   = st.number_input("Custo Fixo Rateado (R$)", 0.0, 500.0, float(p.custo_fixo_rateado), 0.5, "%.2f")
-        with c4:
-            custo_frete = st.number_input("Frete Absorvido (R$)", 0.0, 500.0, float(p.custo_frete_absorvido), 0.5, "%.2f")
-
-        c1, c2 = st.columns(2)
-        with c1:
-            aliq_dev = st.number_input("Devolução / Perda Estimada (%)",
-                0.0, 30.0, float(p.aliq_devolucao), 0.1, "%.2f")
-
-        st.divider()
-
-        # ── D: Financeiro ────────────────────────────────────────────────────
-        st.subheader("D · Custo Financeiro e Parcelamento")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            prazo = st.number_input("Prazo Médio de Recebimento (dias)",
-                1, 90, p.prazo_recebimento_dias, 1)
-        with c2:
-            taxa_fin = st.number_input("Taxa de Custo de Capital Mensal (%)",
-                0.0, 15.0, float(p.taxa_capital_mensal), 0.1, "%.2f")
-        with c3:
-            parcelas = st.number_input("Parcelas Sem Juros Absorvidas (nº)",
-                0, 24, p.parcelas_sem_juros, 1)
-
-        st.divider()
-
         # ── E: Defaults fiscais ──────────────────────────────────────────────
         st.subheader("E · Defaults Fiscais (podem ser sobrescritos por produto)")
         permitidos = ParametrosGlobais.creditos_permitidos(regime)
@@ -146,36 +97,15 @@ def render() -> None:
                 float(p.aliq_credito_pis_cofins), 0.05, "%.2f",
                 disabled=not (permitidos["pis_cofins"] and cred_pis_g))
 
-        st.divider()
-
-        # ── F: Margem ────────────────────────────────────────────────────────
-        st.subheader("F · Margem Desejada Global")
-        margem = st.slider(
-            "Margem de Lucro Líquida Desejada (%)",
-            min_value=1.0, max_value=80.0,
-            value=float(p.margem_lucro_desejada), step=0.5,
-            help="% sobre o preço de venda. Pode ser sobrescrita por produto.")
-
         salvar = st.form_submit_button("💾 Salvar Parâmetros", type="primary",
                                         use_container_width=True)
 
     if salvar:
-        st.session_state["params"] = ParametrosGlobais(
+        novos = ParametrosGlobais(
             regime                    = regime,
             aliq_das                  = aliq_das,
             aliq_icms_proprio         = aliq_icms_proprio,
             aliq_icms_interna_destino = aliq_icms_interna_destino,
-            canal                     = canal,
-            aliq_comissao             = aliq_comissao,
-            aliq_gateway              = aliq_gateway,
-            custo_embalagem           = custo_embal,
-            custo_picking             = custo_pick,
-            custo_fixo_rateado        = custo_fix,
-            custo_frete_absorvido     = custo_frete,
-            aliq_devolucao            = aliq_dev,
-            prazo_recebimento_dias    = prazo,
-            taxa_capital_mensal       = taxa_fin,
-            parcelas_sem_juros        = parcelas,
             tem_difal                 = tem_difal_g,
             aliq_difal                = aliq_difal_g,
             aliq_fcp                  = aliq_fcp_g,
@@ -187,19 +117,15 @@ def render() -> None:
             aliq_credito_icms         = aliq_cred_icms_g,
             credita_pis_cofins        = cred_pis_g,
             aliq_credito_pis_cofins   = aliq_cred_pis_g,
-            margem_lucro_desejada     = margem,
         )
-        if st.session_state["produtos"]:
-            recalcular_resultados()
+        atualizar_params(novos)
         st.success("✅ Parâmetros salvos! Resultados recalculados.")
 
     st.divider()
-    st.subheader("📊 Resumo das Cargas Calculadas")
+    st.subheader("📊 Resumo dos Parâmetros")
     rp: ParametrosGlobais = st.session_state["params"]
     resumo = rp.resumo()
-    c1, c2, c3, c4 = st.columns(4)
-    items = list(resumo.items())
-    for i, (k, v) in enumerate(items):
-        col = [c1, c2, c3, c4][i % 4]
-        with col:
+    cols = st.columns(4)
+    for i, (k, v) in enumerate(resumo.items()):
+        with cols[i % 4]:
             st.metric(k, v)

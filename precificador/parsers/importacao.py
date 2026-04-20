@@ -400,6 +400,9 @@ def aplicar_item_no_produto(
     Blocos SEM sugestão no XML permanecem intocados no produto.
 
     Também cria o vínculo (CNPJ, cod_fornecedor) se ainda não existir.
+
+    O preço praticado NÃO é tratado aqui — ele é persistido no par
+    (produto, canal) via ``utils.estado.aplicar_preco_praticado``.
     """
     produto.qtd             = float(item.get("qtd",         produto.qtd))
     produto.custo_unitario  = float(item.get("custo_unit",  produto.custo_unitario))
@@ -814,11 +817,14 @@ def _mapear_colunas_precos(headers: list[str]) -> dict[str, Optional[str]]:
     return mapa
 
 
-def gerar_template_precos_xlsx(resultados: list) -> bytes:
+def gerar_template_precos_xlsx(resultados: list, canal=None) -> bytes:
     """
     Gera bytes de um .xlsx pré-preenchido com os produtos atualmente
     precificados. O usuário só precisa editar a coluna
     ``Novo Preço Praticado (R$)`` e reimportar.
+
+    Quando ``canal`` é fornecido, o nome do canal aparece no título do
+    relatório para deixar explícito que os preços se aplicam a ele.
 
     Colunas:
       - Código              (chave — não editar)
@@ -855,10 +861,12 @@ def gerar_template_precos_xlsx(resultados: list) -> bytes:
     thin = Side(style="thin", color="BFBFBF")
     bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    # Título
+    titulo = "PREÇOS PRATICADOS — PRECIFICADOR E-COMMERCE"
+    if canal is not None:
+        titulo += f" — CANAL: {str(getattr(canal, 'nome', '')).upper()}"
     ws.merge_cells(f"A1:{ws.cell(row=1, column=n_cols).column_letter}1")
     c = ws["A1"]
-    c.value = "PREÇOS PRATICADOS — PRECIFICADOR E-COMMERCE"
+    c.value = titulo
     c.font = Font(name="Arial", bold=True, size=12, color="FFFFFF")
     c.fill = PatternFill("solid", start_color=C_NAVY, end_color=C_NAVY)
     c.alignment = Alignment(horizontal="center", vertical="center")

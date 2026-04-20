@@ -9,8 +9,10 @@ from parsers.importacao import (
 )
 from utils.estado import (
     listar_produtos, upsert_produto, resetar_produtos, recalcular_resultados,
-    proximo_sku_sequencial,
+    proximo_sku_sequencial, aplicar_preco_praticado, get_preco_praticado_canal,
+    canal_ativo,
 )
+from utils.formato import formatar_cnpj
 
 
 def render() -> None:
@@ -64,7 +66,7 @@ def render() -> None:
 
             emit = dados_xml.get("emitente", {})
             st.info(f"**Fornecedor:** {emit.get('nome','?')}  |  "
-                    f"**CNPJ:** {emit.get('cnpj','?')}  |  "
+                    f"**CNPJ:** {formatar_cnpj(emit.get('cnpj','')) or '?'}  |  "
                     f"**UF:** {emit.get('uf','—')} → "
                     f"{dados_xml.get('destinatario',{}).get('uf','—')}  |  "
                     f"**Operação:** "
@@ -106,12 +108,14 @@ def render() -> None:
             decisoes_pendentes = {}
             aceites = {}  # por (tipo, idx): {"st": bool, "fcp": bool, "difal": bool}
 
+            precos_venda: dict[tuple[str, int], float] = {}
+
             for tipo, idx, it in itens_ui:
                 key_base = f"xml_{tipo}_{idx}"
                 flags    = it["_flags"]
                 with st.container(border=True):
-                    # Linha 1: descrição + seleção de código interno
-                    cc1, cc2 = st.columns([3, 2])
+                    # Linha 1: descrição + seleção de código interno + preço de venda
+                    cc1, cc2, cc3 = st.columns([3, 2, 1.5])
                     with cc1:
                         st.markdown(f"**{it['descricao']}**")
                         st.caption(
@@ -174,6 +178,33 @@ def render() -> None:
                                 decisoes_pendentes[idx] = ("novo", novo_cod)
                             else:
                                 decisoes_pendentes[idx] = ("existente", escolha)
+
+                    with cc3:
+                        preco_atual = 0.0
+                        if tipo == "m":
+                            cod_lookup = it.get("codigo_interno", "")
+                            if cod_lookup:
+                                v = get_preco_praticado_canal(cod_lookup)
+                                if v is not None:
+                                    try:
+                                        preco_atual = float(v)
+                                    except (TypeError, ValueError):
+                                        preco_atual = 0.0
+                        canal_nome = canal_ativo().nome if canal_ativo() else "—"
+                        preco_v = st.number_input(
+                            f"Preço de Venda no canal '{canal_nome}' (R$) — opcional",
+                            min_value=0.0,
+                            max_value=1e7,
+                            value=preco_atual,
+                            step=0.01,
+                            format="%.2f",
+                            key=f"{key_base}_preco_venda",
+                            help="Se informado (> 0), define o **Preço Praticado** "
+                                 "deste produto no **canal ativo** para comparação "
+                                 "com o Preço Mínimo calculado. Deixe em 0 para "
+                                 "manter o preço atual ou usar o mínimo calculado.",
+                        )
+                        precos_venda[(tipo, idx)] = float(preco_v or 0.0)
 
                     # Linha 2: sugestões fiscais — só mostra o que o XML sugere
                     if flags["sugerir_st"] or flags["sugerir_fcp"] or flags["sugerir_difal"]:
@@ -240,11 +271,13 @@ def render() -> None:
                 criados = 0
                 atualizados = 0
                 erros = []
+                codigos_afetados: list[str] = []
 
                 # Pendentes (podem criar novos ou atualizar existentes)
                 for idx, it in enumerate(pendentes):
                     tipo_dec, valor = decisoes_pendentes.get(idx, ("existente", None))
                     ac = aceites.get(("p", idx), {})
+                    pv = precos_venda.get(("p", idx), 0.0)
                     if tipo_dec == "novo":
                         cod = (valor or "").strip()
                         if not cod:
@@ -267,7 +300,10 @@ def render() -> None:
                             aceitar_difal = ac.get("difal", False),
                         )
                         upsert_produto(novo)
+                        if pv > 0:
+                            aplicar_preco_praticado(cod, pv)
                         criados += 1
+                        codigos_afetados.append(cod)
                     else:
                         cod = valor
                         existente = cadastro.get(cod)
@@ -280,7 +316,11 @@ def render() -> None:
                             aceitar_fcp   = ac.get("fcp",   False),
                             aceitar_difal = ac.get("difal", False),
                         )
+                        upsert_produto(existente)
+                        if pv > 0:
+                            aplicar_preco_praticado(cod, pv)
                         atualizados += 1
+                        codigos_afetados.append(cod)
 
                 # Mapeados
                 for idx, it in enumerate(mapeados):
@@ -288,19 +328,50 @@ def render() -> None:
                     if not prod:
                         continue
                     ac = aceites.get(("m", idx), {})
+                    pv = precos_venda.get(("m", idx), 0.0)
                     aplicar_item_no_produto(
                         prod, it,
                         aceitar_st    = ac.get("st",    False),
                         aceitar_fcp   = ac.get("fcp",   False),
                         aceitar_difal = ac.get("difal", False),
                     )
+                    upsert_produto(prod)
+                    if pv > 0:
+                        aplicar_preco_praticado(prod.codigo_interno, pv)
                     atualizados += 1
+                    codigos_afetados.append(prod.codigo_interno)
 
                 recalcular_resultados()
+
+                abaixo_min: list[tuple[str, float, float]] = []
+                for r in st.session_state.get("resultados", []):
+                    cod_r = r.produto.codigo_interno
+                    if cod_r not in codigos_afetados:
+                        continue
+                    preco_canal = get_preco_praticado_canal(cod_r)
+                    if (preco_canal is not None
+                            and float(preco_canal) < float(r.preco_minimo)):
+                        abaixo_min.append((
+                            cod_r,
+                            float(preco_canal),
+                            float(r.preco_minimo),
+                        ))
+
                 for er in erros:
                     st.error(er)
                 st.success(f"✅ Importação concluída: "
                            f"{criados} criado(s), {atualizados} atualizado(s).")
+                if abaixo_min:
+                    linhas = "\n".join(
+                        f"- `{cod}`: praticado R$ {p:.2f} < mínimo R$ {m:.2f}"
+                        for cod, p, m in abaixo_min[:10]
+                    )
+                    extra = (f"\n… e mais {len(abaixo_min) - 10}"
+                             if len(abaixo_min) > 10 else "")
+                    st.warning(
+                        f"⚠️ {len(abaixo_min)} preço(s) de venda informado(s) "
+                        f"**abaixo do mínimo** calculado:\n{linhas}{extra}"
+                    )
                 st.session_state.pop("xml_dados", None)
                 st.rerun()
 
@@ -322,8 +393,9 @@ def render() -> None:
                     st.success("✅ " + av)
                 else:
                     st.warning(av)
-            if novo_cadastro is not st.session_state["produtos"]:
-                st.session_state["produtos"] = novo_cadastro
+            # Persiste cada produto no banco (cria/atualiza) para a empresa atual
+            for prod in novo_cadastro.values():
+                upsert_produto(prod)
             recalcular_resultados()
             st.rerun()
 

@@ -1,4 +1,9 @@
-"""Página 💰 Precificação — tabela de preços calculados e breakdown por produto."""
+"""Página 💰 Precificação — tabela de preços calculados e breakdown por produto.
+
+O cálculo é feito para o **canal ativo** selecionado na sidebar. O ``Preço
+Praticado`` é persistido em ``produto_canal_preco`` para o par (produto, canal
+ativo), de modo que cada canal tem sua própria grade de preços.
+"""
 from decimal import Decimal
 
 import streamlit as st
@@ -6,11 +11,32 @@ import pandas as pd
 
 from models.produto import ResultadoPrecificacao
 from parsers.importacao import gerar_template_precos_xlsx, parse_xlsx_precos
+from utils.estado import (
+    aplicar_preco_praticado, canal_ativo, recalcular_resultados,
+)
 from utils.exportar import exportar_resultado_xlsx
+from auth import sessao
+
+
+def _slug(nome: str) -> str:
+    return "".join(c.lower() if c.isalnum() else "_" for c in (nome or "")).strip("_") or "canal"
 
 
 def render() -> None:
     st.title("💰 Precificação")
+
+    canal = canal_ativo()
+    if canal is None:
+        st.warning("Nenhum canal de venda cadastrado. Cadastre um canal em "
+                   "**🛒 Canais de Venda** antes de precificar.")
+        st.stop()
+
+    st.markdown(
+        f"**Canal ativo:** `{canal.nome}`  ·  Comissão+Gateway "
+        f"{float(canal.perc_operacional_venda)*100:.2f}%  ·  "
+        f"Margem meta {float(canal.margem_lucro_desejada):.2f}%  ·  "
+        f"Custo Fixo/Pedido R$ {float(canal.custo_fixo_total_pedido):.2f}"
+    )
 
     resultados: list[ResultadoPrecificacao] = st.session_state["resultados"]
 
@@ -36,20 +62,24 @@ def render() -> None:
 
     st.divider()
 
-    with st.expander("📥 Importar Preços Praticados via Excel", expanded=False):
+    slug_canal = _slug(canal.nome)
+
+    with st.expander(f"📥 Importar Preços Praticados via Excel — canal `{canal.nome}`",
+                      expanded=False):
         st.caption(
             "Baixe o template já preenchido com os produtos atuais, edite apenas "
             "a coluna **Novo Preço Praticado (R$)** e reimporte. O produto é "
-            "identificado pela coluna **Código**."
+            "identificado pela coluna **Código**. Os preços importados são "
+            f"aplicados exclusivamente ao canal ativo (**{canal.nome}**)."
         )
         c_dl, c_up = st.columns(2)
         with c_dl:
             try:
-                tpl_precos = gerar_template_precos_xlsx(resultados)
+                tpl_precos = gerar_template_precos_xlsx(resultados, canal=canal)
                 st.download_button(
                     "⬇️ Baixar Template com Preços Atuais",
                     data=tpl_precos,
-                    file_name="precos_praticados_template.xlsx",
+                    file_name=f"precos_praticados_{slug_canal}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                 )
@@ -89,12 +119,14 @@ def render() -> None:
                             abaixo_min.append(
                                 (cod, preco, float(r.preco_minimo))
                             )
-                        r.aplicar_preco_praticado(preco)
+                        aplicar_preco_praticado(cod, preco)
                         aplicados += 1
 
                     if aplicados:
+                        recalcular_resultados()
                         st.success(
-                            f"✅ {aplicados} preço(s) aplicado(s) com sucesso."
+                            f"✅ {aplicados} preço(s) aplicado(s) ao canal "
+                            f"**{canal.nome}**."
                         )
                     if nao_encontrados:
                         st.warning(
@@ -118,8 +150,9 @@ def render() -> None:
                     if aplicados:
                         st.rerun()
 
-    st.subheader("Tabela de Precificação")
-    st.caption("🟡 'Preço Praticado' é editável. Altere e clique em Aplicar para recalcular.")
+    st.subheader(f"Tabela de Precificação — {canal.nome}")
+    st.caption("🟡 'Preço Praticado' é editável. Altere e clique em Aplicar para "
+               f"gravar no canal **{canal.nome}**.")
 
     rows = []
     for r in resultados:
@@ -167,8 +200,16 @@ def render() -> None:
     if st.button("🔄 Aplicar Preços Praticados", type="primary"):
         for i, r in enumerate(resultados):
             novo_preco = edited.iloc[i]["Preço Praticado (R$)"]
-            r.aplicar_preco_praticado(novo_preco)
-        st.success("✅ Preços atualizados!")
+            try:
+                novo_preco_f = float(novo_preco) if novo_preco is not None else 0.0
+            except (TypeError, ValueError):
+                novo_preco_f = 0.0
+            aplicar_preco_praticado(
+                r.produto.codigo_interno,
+                novo_preco_f if novo_preco_f > 0 else None,
+            )
+        recalcular_resultados()
+        st.success(f"✅ Preços atualizados no canal **{canal.nome}**.")
         st.rerun()
 
     st.divider()
@@ -230,11 +271,14 @@ def render() -> None:
     c1, c2 = st.columns(2)
     with c1:
         try:
-            xlsx_bytes = exportar_resultado_xlsx(resultados, st.session_state["params"])
+            xlsx_bytes = exportar_resultado_xlsx(
+                resultados, st.session_state["params"], canal,
+                empresa=sessao.get_empresa_atual(),
+            )
             st.download_button(
                 "⬇️ Baixar Excel Completo",
                 data=xlsx_bytes,
-                file_name="precificacao_resultado.xlsx",
+                file_name=f"precificacao_{slug_canal}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
@@ -245,7 +289,7 @@ def render() -> None:
         st.download_button(
             "⬇️ Baixar CSV",
             data=csv.encode("utf-8-sig"),
-            file_name="precificacao_resultado.csv",
+            file_name=f"precificacao_{slug_canal}.csv",
             mime="text/csv",
             use_container_width=True,
         )

@@ -36,10 +36,12 @@ def _bdr(style="thin", color="BFBFBF"):
 def exportar_resultado_xlsx(
     resultados: list,          # list[ResultadoPrecificacao]
     params,                    # ParametrosGlobais
+    canal=None,                # CanalVenda | None
+    empresa: dict | None = None,
 ) -> bytes:
     """
     Gera bytes de um arquivo .xlsx com:
-    - Aba Resumo Parâmetros
+    - Aba Resumo Parâmetros (empresa) + resumo do canal, quando informado
     - Aba Precificação detalhada
     """
     if not _OK:
@@ -58,12 +60,18 @@ def exportar_resultado_xlsx(
 
     ws_p.merge_cells("A1:B1")
     c = ws_p["A1"]
-    c.value = "PARÂMETROS UTILIZADOS NA PRECIFICAÇÃO"
+    titulo = "PARÂMETROS UTILIZADOS NA PRECIFICAÇÃO"
+    if canal is not None:
+        titulo += f" — CANAL: {canal.nome.upper()}"
+    c.value = titulo
     c.font = _fnt(bold=True, color="FFFFFF", size=12)
     c.fill = _fl("1F3864"); c.alignment = _al("center","center")
     ws_p.row_dimensions[1].height = 28
 
-    resumo = params.resumo()
+    resumo: dict[str, str] = {}
+    resumo.update(params.resumo())
+    if canal is not None:
+        resumo.update(canal.resumo(params))
     for i, (lbl, val) in enumerate(resumo.items(), 2):
         ws_p.row_dimensions[i].height = 18
         c1 = ws_p.cell(row=i, column=1, value=lbl)
@@ -105,7 +113,14 @@ def exportar_resultado_xlsx(
     # Título
     ws_r.merge_cells(f"A1:{get_column_letter(len(campos))}1")
     c = ws_r["A1"]
-    c.value = "PRECIFICAÇÃO E-COMMERCE — RESULTADO DETALHADO"
+    partes = ["PRECIFICAÇÃO"]
+    if empresa is not None:
+        nome_emp = str(empresa.get("nome") or "").strip()
+        if nome_emp:
+            partes.append(nome_emp.upper())
+    if canal is not None:
+        partes.append(str(canal.nome).upper())
+    c.value = " ".join(partes) + " — RESULTADO DETALHADO"
     c.font = _fnt(bold=True, color="FFFFFF", size=12)
     c.fill = _fl("375623"); c.alignment = _al("center","center")
     ws_r.row_dimensions[1].height = 28

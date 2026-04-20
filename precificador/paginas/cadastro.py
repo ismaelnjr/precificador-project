@@ -4,13 +4,18 @@ import pandas as pd
 
 from models.produto import ParametrosGlobais, Produto
 from utils.estado import (
-    listar_produtos, upsert_produto, remover_produto, recalcular_resultados,
+    canal_ativo, listar_produtos, upsert_produto, remover_produto,
+    recalcular_resultados,
 )
+from utils.formato import digitos_cnpj, formatar_cnpj, input_cnpj
 
 
 def _render_form_produto(prefixo: str, base: Produto | None):
     """Desenha o formulário de criação/edição e retorna o dict de valores."""
     g: ParametrosGlobais = st.session_state["params"]
+    canal = canal_ativo()
+    margem_canal = float(canal.margem_lucro_desejada) if canal else 15.0
+    nome_canal = canal.nome if canal else "—"
     permitidos = ParametrosGlobais.creditos_permitidos(g.regime)
 
     b = base or Produto(codigo_interno="")
@@ -271,19 +276,24 @@ def _render_form_produto(prefixo: str, base: Produto | None):
                                 0.5, "%.2f", key=f"{prefixo}_int"))
         with c2:
             usar_g_m = st.checkbox(
-                f"Margem: usar global ({g.margem_lucro_desejada:.2f}%)",
+                f"Margem: usar a do canal '{nome_canal}' ({margem_canal:.2f}%)",
                 value=(b.margem_desejada is None), key=f"{prefixo}_m_ug",
+                help="Quando desmarcado, a margem informada sobrescreve a do "
+                     "canal ativo para este produto específico.",
             )
             margem_v = (None if usar_g_m else
                 st.number_input("Margem (%)", 0.0, 80.0,
                                 float(b.margem_desejada if b.margem_desejada is not None
-                                      else g.margem_lucro_desejada),
+                                      else margem_canal),
                                 0.5, "%.2f", key=f"{prefixo}_m"))
 
     st.markdown("**Vínculos de Fornecedor** — usados na importação de XML.")
     vinc = list(b.vinculos_fornecedor or [])
     if vinc:
-        df_v = pd.DataFrame(vinc)
+        df_v = pd.DataFrame([
+            {**v, "cnpj": formatar_cnpj(v.get("cnpj", ""))}
+            for v in vinc
+        ])
         st.dataframe(df_v, use_container_width=True, hide_index=True)
     else:
         st.caption("Nenhum vínculo cadastrado.")
@@ -291,7 +301,7 @@ def _render_form_produto(prefixo: str, base: Produto | None):
     with st.expander("➕ Adicionar vínculo de fornecedor"):
         vc1, vc2, vc3 = st.columns(3)
         with vc1:
-            novo_cnpj = st.text_input("CNPJ", key=f"{prefixo}_vcnpj")
+            novo_cnpj = input_cnpj("CNPJ", key=f"{prefixo}_vcnpj")
         with vc2:
             novo_cod  = st.text_input("Cód. no Fornecedor",
                                       key=f"{prefixo}_vcod")
@@ -418,6 +428,7 @@ def render() -> None:
             cnpj, codf, nome = dados["_novo_vinculo"]
             if cnpj and codf:
                 if atual.adicionar_vinculo(cnpj, codf, nome):
+                    upsert_produto(atual)
                     st.success("✅ Vínculo adicionado.")
                     st.rerun()
                 else:
@@ -450,6 +461,7 @@ def render() -> None:
             cnpj, codf, nome = dados["_novo_vinculo"]
             if cnpj and codf:
                 atual.adicionar_vinculo(cnpj, codf, nome)
+            upsert_produto(atual)
             recalcular_resultados()
             st.success(f"✅ Produto '{sel}' atualizado.")
             st.rerun()
@@ -467,6 +479,7 @@ def render() -> None:
                         v for i, v in enumerate(atual.vinculos_fornecedor)
                         if i not in idx_remover
                     ]
+                    upsert_produto(atual)
                     st.success(f"{len(idx_remover)} vínculo(s) removido(s).")
                     st.rerun()
             else:
