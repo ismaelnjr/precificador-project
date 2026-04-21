@@ -19,6 +19,7 @@ from utils.estado import (
     atualizar_classe, contar_produtos_por_classe, criar_classe,
     listar_classes, remover_classe,
 )
+from utils.ui_feedback import definir_flash
 
 
 def _form_classe(prefixo: str, base: ClasseProduto | None) -> dict:
@@ -84,7 +85,7 @@ def render() -> None:
                     nova = criar_classe(ClasseProduto(
                         nome=nome, ativo=bool(dados["ativo"]),
                     ))
-                    st.success(f"✅ Classe '{nova.nome}' criada.")
+                    definir_flash("success", f"✅ Classe '{nova.nome}' criada.")
                     st.rerun()
                 except ValueError as e:
                     st.error(str(e))
@@ -114,7 +115,7 @@ def render() -> None:
                         atualizar_classe(atual.id, ClasseProduto(
                             id=atual.id, nome=nome, ativo=bool(dados["ativo"]),
                         ))
-                        st.success(f"✅ Classe '{nome}' atualizada.")
+                        definir_flash("success", f"✅ Classe '{nome}' atualizada.")
                         st.rerun()
                     except ValueError as e:
                         st.error(str(e))
@@ -149,7 +150,10 @@ def render() -> None:
                           disabled=not confirm):
                 try:
                     remover_classe(alvo.id)
-                    st.success(f"Classe '{alvo.nome}' removida.")
+                    definir_flash(
+                        "success",
+                        f"Classe '{alvo.nome}' removida.",
+                    )
                     st.rerun()
                 except ValueError as e:
                     st.error(str(e))

@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 
+from auth import sessao
 from models.produto import ClasseProduto, Produto, ParametrosGlobais
 from parsers.importacao import (
     parse_xml_nfe, parse_xlsx_cadastro, gerar_template_xlsx,
@@ -14,7 +15,8 @@ from utils.estado import (
     canal_ativo, classe_geral_id, classe_por_id, listar_classes,
     criar_classe, recarregar_classes,
 )
-from utils.formato import formatar_cnpj
+from utils.formato import digitos_cnpj, formatar_cnpj
+from utils.ui_feedback import definir_flash
 
 
 # Campos de custo comparados entre o produto no cadastro e o item do XML
@@ -66,14 +68,17 @@ def _selectbox_classe_destino() -> int | None:
         return None
     opcoes_ids = [c.id for c in classes]
     default_id = classe_geral_id() or opcoes_ids[0]
-    idx = opcoes_ids.index(default_id) if default_id in opcoes_ids else 0
+    dest_key = "import_classe_destino"
+    if dest_key not in st.session_state:
+        st.session_state[dest_key] = default_id
+    elif st.session_state[dest_key] not in opcoes_ids:
+        st.session_state[dest_key] = default_id
     return st.selectbox(
         "Classe para novos produtos",
         opcoes_ids,
-        index=idx,
         format_func=lambda cid: next(
             (c.nome for c in classes if c.id == cid), str(cid)),
-        key="import_classe_destino",
+        key=dest_key,
         help="Classe padrão atribuída aos produtos **criados** nesta "
              "importação. Na planilha, a coluna opcional 'Classe' sobrepõe "
              "este valor linha a linha; nomes de classe novos são criados "
@@ -84,6 +89,40 @@ def _selectbox_classe_destino() -> int | None:
 def _nome_classe_por_id(classes: list[ClasseProduto], classe_id: int) -> str:
     """Retorna o nome da classe para exibição em widgets."""
     return next((c.nome for c in classes if c.id == classe_id), str(classe_id))
+
+
+def _gerar_sku_pendente_xml(idx_pendente: int, total_pendentes: int) -> None:
+    """Gera o próximo SKU livre para um item pendente do XML."""
+    reservados = {
+        (st.session_state.get(f"xml_p_{j}_novo", "") or "").strip()
+        for j in range(total_pendentes)
+        if j != idx_pendente
+    }
+    reservados.discard("")
+    st.session_state[f"xml_p_{idx_pendente}_novo"] = proximo_sku_sequencial(
+        reservados
+    )
+
+
+def _validar_cnpj_empresa_no_xml(dados_xml: dict) -> tuple[bool, str]:
+    """Valida se o CNPJ da empresa ativa aparece no XML (emit/dest)."""
+    empresa = sessao.get_empresa_atual() or {}
+    cnpj_empresa = digitos_cnpj(empresa.get("cnpj", ""))
+    cnpj_emit = digitos_cnpj(dados_xml.get("emitente", {}).get("cnpj", ""))
+    cnpj_dest = digitos_cnpj(dados_xml.get("destinatario", {}).get("cnpj", ""))
+
+    if not cnpj_empresa:
+        return False, "CNPJ da empresa atual não encontrado na sessão."
+
+    if cnpj_empresa in {cnpj_emit, cnpj_dest}:
+        return True, ""
+
+    return False, (
+        "XML não pertence à empresa selecionada. "
+        f"Empresa atual: `{formatar_cnpj(cnpj_empresa)}`. "
+        f"Emitente XML: `{formatar_cnpj(cnpj_emit) or 'não informado'}`. "
+        f"Destinatário XML: `{formatar_cnpj(cnpj_dest) or 'não informado'}`."
+    )
 
 
 def render() -> None:
@@ -130,7 +169,12 @@ def render() -> None:
                 dados_xml, avisos = parse_xml_nfe(f_xml.read())
             for av in avisos:
                 st.warning(av)
-            st.session_state["xml_dados"] = dados_xml
+            ok_cnpj, msg_cnpj = _validar_cnpj_empresa_no_xml(dados_xml)
+            if not ok_cnpj:
+                st.error(msg_cnpj)
+                st.session_state.pop("xml_dados", None)
+            else:
+                st.session_state["xml_dados"] = dados_xml
 
         dados_xml = st.session_state.get("xml_dados")
         if dados_xml and dados_xml.get("itens"):
@@ -261,10 +305,18 @@ def render() -> None:
                                              "clique em “Gerar SKU”.",
                                     )
                                 with col_cls:
+                                    cls_opts = [None] + opcoes_classe
+                                    classe_novo_key = f"{key_base}_classe_novo"
+                                    if classe_novo_key not in st.session_state:
+                                        st.session_state[classe_novo_key] = None
+                                    elif (
+                                        st.session_state[classe_novo_key]
+                                        not in cls_opts
+                                    ):
+                                        st.session_state[classe_novo_key] = None
                                     classe_item = st.selectbox(
                                         "Classe do novo produto *",
-                                        [None] + opcoes_classe,
-                                        index=0,
+                                        cls_opts,
                                         format_func=lambda cid: (
                                             "— Selecione a classe —"
                                             if cid is None else
@@ -272,31 +324,21 @@ def render() -> None:
                                                 classes_disponiveis, int(cid)
                                             )
                                         ),
-                                        key=f"{key_base}_classe_novo",
+                                        key=classe_novo_key,
                                         help="Seleção obrigatória para criar "
                                              "produto novo a partir deste item.",
                                     )
                                 with col_btn:
-                                    if st.button(
+                                    st.button(
                                         "Gerar SKU",
                                         key=f"{key_base}_gen",
                                         help="Gera o próximo SKU sequencial "
                                              "(SKU-0001, SKU-0002, ...). Você pode "
                                              "editar o valor depois.",
                                         width="stretch",
-                                    ):
-                                        reservados = {
-                                            (st.session_state.get(
-                                                f"xml_p_{j}_novo", "") or ""
-                                            ).strip()
-                                            for j in range(len(pendentes))
-                                            if j != idx
-                                        }
-                                        reservados.discard("")
-                                        st.session_state[f"{key_base}_novo"] = (
-                                            proximo_sku_sequencial(reservados)
-                                        )
-                                        st.rerun()
+                                        on_click=_gerar_sku_pendente_xml,
+                                        args=(idx, len(pendentes)),
+                                    )
                                 if classe_item is None:
                                     st.markdown(
                                         "<span style='display:inline-block;"
@@ -623,8 +665,11 @@ def render() -> None:
 
                 for er in erros:
                     st.error(er)
-                st.success(f"✅ Importação concluída: "
-                           f"{criados} criado(s), {atualizados} atualizado(s).")
+                definir_flash(
+                    "success",
+                    f"✅ Importação concluída: "
+                    f"{criados} criado(s), {atualizados} atualizado(s).",
+                )
                 if custos_rejeitados:
                     st.info(
                         f"ℹ️ {custos_rejeitados} item(ns) tiveram os custos do "
@@ -795,7 +840,8 @@ def render() -> None:
                 recalcular_resultados()
                 cls = classe_por_id(classe_destino_id)
                 extra = f" em **{cls.nome}**" if cls else ""
-                st.success(f"✅ '{cod}' cadastrado{extra}.")
+                definir_flash("success", f"✅ '{cod}' cadastrado{extra}.")
+                st.rerun()
 
     # ── Lista atual ──────────────────────────────────────────────────────────
     st.divider()
@@ -807,4 +853,5 @@ def render() -> None:
 
         if st.button("🗑️ Limpar cadastro inteiro", type="secondary"):
             resetar_produtos()
+            definir_flash("warning", "Cadastro da empresa zerado.")
             st.rerun()

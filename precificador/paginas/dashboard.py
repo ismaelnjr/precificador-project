@@ -59,6 +59,38 @@ def render() -> None:
                     f"{len(resultados_all)} produto(s) após o filtro."
                 )
 
+    # ── Filtro por Produto ───────────────────────────────────────────────────
+    opcoes_produtos = sorted(
+        resultados,
+        key=lambda r: ((r.produto.codigo_interno or "").lower(), (r.produto.descricao or "").lower()),
+    )
+    mapa_produtos = {
+        f"{r.produto.codigo_interno} — {(r.produto.descricao or '').strip() or '(sem descrição)'}":
+        r.produto.codigo_interno
+        for r in opcoes_produtos
+    }
+    if mapa_produtos:
+        filtro_produtos = st.multiselect(
+            "Filtrar por produto",
+            list(mapa_produtos.keys()),
+            default=[],
+            key="dashboard_filtro_produtos",
+            placeholder="Considerar todos os produtos",
+        )
+        if filtro_produtos:
+            codigos_sel = {mapa_produtos[label] for label in filtro_produtos}
+            resultados = [
+                r for r in resultados
+                if r.produto.codigo_interno in codigos_sel
+            ]
+            if not resultados:
+                st.info("Nenhum produto bate com o filtro de produtos.")
+                st.stop()
+            st.caption(
+                f"Considerando **{len(resultados)}** de "
+                f"{len(resultados_all)} produto(s) após os filtros aplicados."
+            )
+
     ok   = sum(1 for r in resultados if "✅" in r.status)
     warn = sum(1 for r in resultados if "⚠️" in r.status)
     bad  = sum(1 for r in resultados if "🔴" in r.status)
@@ -161,23 +193,27 @@ def render() -> None:
     st.divider()
 
     st.subheader("Composição Média do Preço de Venda")
-    params = st.session_state["params"]
     preco_med = avg_preco if avg_preco > 0 else 1
+    imposto_medio = (
+        sum(float(r.perc_impostos) for r in resultados) / len(resultados)
+    )
+    deducoes_medias = (
+        imposto_medio
+        + float(canal.perc_operacional_venda)
+        + float(canal.perc_financeiro)
+        + float(canal.perc_devolucao)
+    )
 
     componentes = {
         "Custo do Produto":  avg_custo,
         "Custos Operac.":    float(canal.custo_fixo_total_pedido),
-        "Impostos":          preco_med * float(params.perc_impostos_venda),
+        "Impostos":          preco_med * imposto_medio,
         "Comissão+Gateway":  preco_med * float(canal.perc_operacional_venda),
         "Custo Financeiro":  preco_med * float(canal.perc_financeiro),
         "Devoluções":        preco_med * float(canal.perc_devolucao),
         "Lucro Líquido":     preco_med - avg_custo
                              - float(canal.custo_fixo_total_pedido)
-                             - preco_med * float(
-                                 params.perc_impostos_venda
-                                 + canal.perc_operacional_venda
-                                 + canal.perc_financeiro
-                                 + canal.perc_devolucao),
+                             - preco_med * deducoes_medias,
     }
     df_comp = pd.DataFrame([
         {"Componente": k, "R$ Médio": round(v, 2),

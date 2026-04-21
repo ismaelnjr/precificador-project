@@ -16,6 +16,7 @@ from utils.estado import (
     recalcular_resultados,
 )
 from utils.exportar import exportar_resultado_xlsx
+from utils.ui_feedback import definir_flash
 from auth import sessao
 
 
@@ -46,7 +47,6 @@ def render() -> None:
                 "e ajuste os parâmetros.")
         if st.button("Ir para Importar →"):
             st.session_state["pagina"] = "📦 Importar Produtos"
-            st.rerun()
         st.stop()
 
     # ── Filtro por Classe ────────────────────────────────────────────────────
@@ -73,6 +73,41 @@ def render() -> None:
                     f"Exibindo **{len(resultados)}** de "
                     f"{len(resultados_all)} produto(s) após filtro de classe."
                 )
+
+    # ── Filtro por Produto (igual ao Dashboard) ──────────────────────────────
+    opcoes_produtos = sorted(
+        resultados,
+        key=lambda r: (
+            (r.produto.codigo_interno or "").lower(),
+            (r.produto.descricao or "").lower(),
+        ),
+    )
+    mapa_produtos = {
+        f"{r.produto.codigo_interno} — "
+        f"{(r.produto.descricao or '').strip() or '(sem descrição)'}": r.produto.codigo_interno
+        for r in opcoes_produtos
+    }
+    if mapa_produtos:
+        filtro_produtos = st.multiselect(
+            "Filtrar por produto",
+            list(mapa_produtos.keys()),
+            default=[],
+            key="precif_filtro_produtos",
+            placeholder="Considerar todos os produtos",
+        )
+        if filtro_produtos:
+            codigos_sel = {mapa_produtos[label] for label in filtro_produtos}
+            resultados = [
+                r for r in resultados
+                if r.produto.codigo_interno in codigos_sel
+            ]
+            if not resultados:
+                st.info("Nenhum produto bate com o filtro de produtos.")
+                st.stop()
+            st.caption(
+                f"Considerando **{len(resultados)}** de "
+                f"{len(resultados_all)} produto(s) após os filtros aplicados."
+            )
 
     ok   = sum(1 for r in resultados if "✅" in r.status)
     warn = sum(1 for r in resultados if "⚠️" in r.status)
@@ -150,10 +185,12 @@ def render() -> None:
 
                     if aplicados:
                         recalcular_resultados()
-                        st.success(
+                        definir_flash(
+                            "success",
                             f"✅ {aplicados} preço(s) aplicado(s) ao canal "
-                            f"**{canal.nome}**."
+                            f"**{canal.nome}**.",
                         )
+                        st.rerun()
                     if nao_encontrados:
                         st.warning(
                             f"{len(nao_encontrados)} código(s) não "
@@ -173,8 +210,6 @@ def render() -> None:
                             f"**abaixo do mínimo**:\n{linhas}{extra}"
                         )
 
-                    if aplicados:
-                        st.rerun()
 
     st.subheader(f"Tabela de Precificação — {canal.nome}")
     st.caption("🟡 'Preço Praticado' é editável. Altere e clique em Aplicar para "
@@ -235,7 +270,10 @@ def render() -> None:
                 novo_preco_f if novo_preco_f > 0 else None,
             )
         recalcular_resultados()
-        st.success(f"✅ Preços atualizados no canal **{canal.nome}**.")
+        definir_flash(
+            "success",
+            f"✅ Preços atualizados no canal **{canal.nome}**.",
+        )
         st.rerun()
 
     st.divider()

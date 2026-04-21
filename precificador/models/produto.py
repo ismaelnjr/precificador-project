@@ -86,9 +86,12 @@ class ParametrosGlobais:
 
     def resumo(self) -> dict:
         return {
-            "Regime Tributário":                  self.regime,
-            "% Impostos s/ Venda (DAS + ICMS)":   f"{float(self.perc_impostos_venda)*100:.2f}%",
-            "Alíq. Interna do Estado":            f"{float(self.aliq_icms_interna_destino):.2f}%",
+            "Regime Tributário":                   self.regime,
+            "Alíquota Efetiva DAS / Tributos Federais (%)": (
+                f"{float(self.aliq_das):.2f}%"),
+            "ICMS embutido no DAS / ICMS Próprio s/ Venda (%)": (
+                f"{float(self.aliq_icms_proprio):.2f}%"),
+            "Alíq. Interna do Estado":             f"{float(self.aliq_icms_interna_destino):.2f}%",
             "Tem DIFAL (default)":                "Sim" if self.tem_difal else "Não",
             "Tem ST (default)":                   "Sim" if self.tem_st else "Não",
             "Tem Antecipação (default)":          "Sim" if self.tem_antecipacao else "Não",
@@ -488,6 +491,24 @@ class ResultadoPrecificacao:
     markup_sobre_custo: Decimal     = field(init=False)
     margem_liquida_real: Decimal    = field(init=False)
 
+    def _calcular_perc_impostos_venda(self) -> Decimal:
+        """
+        Resolve a carga percentual de impostos sobre a venda para o produto.
+
+        Regra para Simples Nacional:
+        - sem ST: usa apenas DAS;
+        - com ST: usa DAS - ICMS embutido (``aliq_icms_proprio``).
+        """
+        regime = (self.params.regime or "").strip().lower()
+        if regime == "simples nacional":
+            das = _pct(self.params.aliq_das)
+            if self.produto.resolver_tem_st(self.params):
+                icms_embutido = _pct(self.params.aliq_icms_proprio)
+                efetiva = das - icms_embutido
+                return efetiva if efetiva > 0 else Decimal("0")
+            return das
+        return self.params.perc_impostos_venda
+
     def __post_init__(self):
         p = self.produto
         g = self.params
@@ -501,7 +522,7 @@ class ResultadoPrecificacao:
 
         self.custo_fixo_pedido = c.custo_fixo_total_pedido
 
-        self.perc_impostos    = g.perc_impostos_venda
+        self.perc_impostos    = self._calcular_perc_impostos_venda()
         self.perc_operacional = c.perc_operacional_venda
         self.perc_financeiro  = c.perc_financeiro
         self.perc_devolucao   = c.perc_devolucao

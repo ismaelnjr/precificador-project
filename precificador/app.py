@@ -26,11 +26,20 @@ from utils.estado import (
     listar_canais, selecionar_canal,
 )
 from utils.formato import formatar_cnpj
+from utils.ui_feedback import definir_flash, exibir_e_limpar_flash
 from auth import sessao
 from paginas import (
     PAGINAS_APP, PAGINA_ADMIN,
     render_login, render_selecao_empresa,
 )
+
+VERSAO_PRODUTO = os.getenv("APP_VERSION", "não informada")
+
+
+def render_rodape() -> None:
+    """Exibe o rodapé com a versão em produção."""
+    st.divider()
+    st.caption(f"Versão em produção: `{VERSAO_PRODUTO}`")
 
 
 # ─── Configuração da página ───────────────────────────────────────────────────
@@ -118,6 +127,7 @@ if not sessao.esta_logado():
     # tela "limpa" (seleção de empresa), sem manter o formulário acima.
     if sessao.esta_logado():
         st.rerun()
+    render_rodape()
     st.stop()
 
 
@@ -140,11 +150,14 @@ if empresa is None:
             if st.button("🚪 Sair", width="stretch"):
                 sessao.logout()
                 st.rerun()
+        exibir_e_limpar_flash()
         PAGINA_ADMIN[1]()
+        render_rodape()
         st.stop()
 
     # Caso padrão: mostra a tela de seleção de empresa.
     render_selecao_empresa()
+    render_rodape()
     st.stop()
 
 
@@ -179,8 +192,14 @@ with st.sidebar:
             (i for i, c in enumerate(canais) if c.id == canal_atual_id),
             0,
         )
-        escolhido = st.selectbox("🛒 Canal ativo", nomes, index=idx,
-                                  key="sidebar_canal_sel")
+        canal_sel_key = "sidebar_canal_sel"
+        if canal_sel_key not in st.session_state:
+            st.session_state[canal_sel_key] = nomes[idx]
+        elif st.session_state[canal_sel_key] not in nomes:
+            st.session_state[canal_sel_key] = nomes[idx]
+        escolhido = st.selectbox(
+            "🛒 Canal ativo", nomes, key=canal_sel_key,
+        )
         alvo = canais[nomes.index(escolhido)]
         if alvo.id != canal_atual_id:
             selecionar_canal(alvo.id)
@@ -209,7 +228,8 @@ with st.sidebar:
     if n_prod > 0:
         if st.button("🔄 Recalcular tudo", width="stretch"):
             recalcular_resultados()
-            st.success("Recalculado!")
+            definir_flash("success", "Recalculado!")
+            st.rerun()
 
     st.divider()
     ncol1, ncol2 = st.columns(2)
@@ -226,7 +246,10 @@ with st.sidebar:
 
 
 # ─── Rota para a página selecionada ───────────────────────────────────────────
+exibir_e_limpar_flash()
 if is_admin and pagina == PAGINA_ADMIN[0]:
     PAGINA_ADMIN[1]()
 else:
     PAGINAS_APP[pagina]()
+
+render_rodape()

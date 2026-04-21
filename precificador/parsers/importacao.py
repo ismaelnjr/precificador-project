@@ -136,6 +136,7 @@ def parse_xml_nfe(source) -> tuple[dict, list[str]]:
     cnpj_emit = ""
     nome_emit = ""
     uf_emit   = ""
+    cnpj_dest = ""
     uf_dest   = ""
     for el in root.iter():
         t = _tag(el)
@@ -145,6 +146,7 @@ def parse_xml_nfe(source) -> tuple[dict, list[str]]:
                         or _find_text_local(el, "xFant", "")
             uf_emit   = _find_text_local(el, "UF", "")
         elif t == "dest":
+            cnpj_dest = _normalizar_cnpj(_find_text_local(el, "CNPJ", ""))
             uf_dest   = _find_text_local(el, "UF", "")
 
     if not cnpj_emit:
@@ -165,7 +167,7 @@ def parse_xml_nfe(source) -> tuple[dict, list[str]]:
     if not det_list:
         return ({"emitente": {"cnpj": cnpj_emit, "nome": nome_emit,
                               "uf": uf_emit},
-                 "destinatario": {"uf": uf_dest},
+                 "destinatario": {"cnpj": cnpj_dest, "uf": uf_dest},
                  "id_dest": id_dest, "itens": []},
                 avisos + ["Nenhum item (<det>) encontrado no XML."])
 
@@ -260,7 +262,7 @@ def parse_xml_nfe(source) -> tuple[dict, list[str]]:
         avisos.append("Nenhum produto extraído do XML.")
 
     return ({"emitente": {"cnpj": cnpj_emit, "nome": nome_emit, "uf": uf_emit},
-             "destinatario": {"uf": uf_dest},
+             "destinatario": {"cnpj": cnpj_dest, "uf": uf_dest},
              "id_dest": id_dest,
              "itens": itens},
             avisos)

@@ -16,6 +16,7 @@ from utils.estado import (
     atualizar_canal, canal_ativo, criar_canal, listar_canais,
     recalcular_resultados, remover_canal, selecionar_canal,
 )
+from utils.ui_feedback import definir_flash
 
 
 def _form_canal(prefixo: str, base: CanalVenda | None) -> dict:
@@ -183,7 +184,7 @@ def render() -> None:
             else:
                 try:
                     novo = criar_canal(_dados_para_canal(dados))
-                    st.success(f"✅ Canal '{novo.nome}' criado.")
+                    definir_flash("success", f"✅ Canal '{novo.nome}' criado.")
                     # Se ainda não há canal ativo, já seleciona o recém criado
                     if st.session_state.get("canal_ativo_id") is None:
                         selecionar_canal(novo.id)
@@ -221,14 +222,17 @@ def render() -> None:
                 else:
                     try:
                         atualizar_canal(atual.id, _dados_para_canal(dados, atual.id))
-                        st.success(f"✅ Canal '{nome}' atualizado.")
+                        definir_flash("success", f"✅ Canal '{nome}' atualizado.")
                         st.rerun()
                     except ValueError as e:
                         st.error(str(e))
 
             if tornar_ativo:
                 selecionar_canal(atual.id)
-                st.success(f"★ Canal '{atual.nome}' definido como ativo.")
+                definir_flash(
+                    "success",
+                    f"★ Canal '{atual.nome}' definido como ativo.",
+                )
                 st.rerun()
 
             # Resumo calculado do canal selecionado
@@ -258,7 +262,7 @@ def render() -> None:
                 try:
                     remover_canal(alvo.id)
                     recalcular_resultados()
-                    st.success(f"Canal '{alvo.nome}' removido.")
+                    definir_flash("success", f"Canal '{alvo.nome}' removido.")
                     st.rerun()
                 except ValueError as e:
                     st.error(str(e))

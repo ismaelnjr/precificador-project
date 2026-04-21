@@ -1,4 +1,5 @@
 """Página 📋 Cadastro de Produtos — CRUD de produtos com parâmetros fiscais."""
+import os
 import streamlit as st
 import pandas as pd
 
@@ -8,6 +9,13 @@ from utils.estado import (
     listar_produtos, upsert_produto, remover_produto, recalcular_resultados,
 )
 from utils.formato import digitos_cnpj, formatar_cnpj, input_cnpj
+from utils.ui_feedback import definir_flash
+
+
+def _debug_cadastro_ativo() -> bool:
+    """Teste dirigido: painel JSON ao salvar se env PRECIFICADOR_DEBUG_CADASTRO=1."""
+    v = (os.environ.get("PRECIFICADOR_DEBUG_CADASTRO") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
 
 
 def _render_form_produto(prefixo: str, base: Produto | None):
@@ -48,14 +56,17 @@ def _render_form_produto(prefixo: str, base: Produto | None):
             default_id = b.classe_id
             if default_id not in opcoes_ids:
                 default_id = classe_geral_id() or opcoes_ids[0]
+            classe_key = f"{prefixo}_classe"
+            if classe_key not in st.session_state:
+                st.session_state[classe_key] = default_id
+            elif st.session_state[classe_key] not in opcoes_ids:
+                st.session_state[classe_key] = default_id
             classe_id_v = st.selectbox(
                 "Classe *",
                 opcoes_ids,
-                index=opcoes_ids.index(default_id)
-                      if default_id in opcoes_ids else 0,
                 format_func=lambda cid: next(
                     (c.nome for c in classes if c.id == cid), str(cid)),
-                key=f"{prefixo}_classe",
+                key=classe_key,
                 help="Categoria organizacional — usada em filtros e relatórios.",
             )
     with col_ncm:
@@ -372,6 +383,20 @@ def render() -> None:
                 "**código interno alfanumérico** único. Os campos fiscais vazios "
                 "usam os **Parâmetros Globais**.")
 
+    if _debug_cadastro_ativo():
+        dbg = st.session_state.pop("_cadastro_debug_salvar", None)
+        if dbg:
+            with st.expander(
+                "🔬 Teste dirigido — último Salvar (cadastro de produto)",
+                expanded=True,
+            ):
+                st.json(dbg)
+                st.caption(
+                    "Variável de ambiente: `PRECIFICADOR_DEBUG_CADASTRO=1`. "
+                    "Se `dados_classe_id` ≠ `session_classe_id`, o retorno do "
+                    "formulário e o estado do selectbox divergiram nesse rerun."
+                )
+
     produtos_dict: dict[str, Produto] = st.session_state["produtos"]
     produtos_list = listar_produtos()
     classes_disponiveis = listar_classes()
@@ -412,18 +437,24 @@ def render() -> None:
                               width="stretch")
         if criar:
             cod = (dados["codigo_interno"] or "").strip()
+            novo_classe_key = "novo_classe"
+            classe_id_efetivo = (
+                st.session_state[novo_classe_key]
+                if novo_classe_key in st.session_state
+                else dados["classe_id"]
+            )
             if not cod:
                 st.error("Código Interno é obrigatório.")
             elif cod in produtos_dict:
                 st.error(f"Já existe produto com código '{cod}'.")
-            elif dados["classe_id"] is None:
+            elif classe_id_efetivo is None:
                 st.error("Classe é obrigatória. Cadastre uma classe primeiro "
                          "em **🏷️ Classes de Produto**.")
             else:
                 p = Produto(
                     codigo_interno          = cod,
                     descricao               = dados["descricao"],
-                    classe_id               = dados["classe_id"],
+                    classe_id               = classe_id_efetivo,
                     ncm                     = dados["ncm"],
                     qtd                     = float(dados["qtd"]),
                     custo_unitario          = float(dados["custo_unitario"]),
@@ -451,7 +482,17 @@ def render() -> None:
                     p.adicionar_vinculo(cnpj, codf, nome)
                 upsert_produto(p)
                 recalcular_resultados()
-                st.success(f"✅ Produto '{cod}' criado.")
+                if _debug_cadastro_ativo():
+                    st.session_state["_cadastro_debug_salvar"] = {
+                        "acao":              "novo",
+                        "codigo":            cod,
+                        "dados_classe_id":   dados["classe_id"],
+                        "session_classe_id": st.session_state.get(novo_classe_key),
+                        "classe_id_gravado": p.classe_id,
+                        "classe_nome_cache": p.classe_nome,
+                    }
+                definir_flash("success", f"✅ Produto '{cod}' criado.")
+                st.session_state.pop("novo_classe", None)
                 st.rerun()
 
     # ── Editar Produto ────────────────────────────────────────────────────────
@@ -474,7 +515,7 @@ def render() -> None:
             if cnpj and codf:
                 if atual.adicionar_vinculo(cnpj, codf, nome):
                     upsert_produto(atual)
-                    st.success("✅ Vínculo adicionado.")
+                    definir_flash("success", "✅ Vínculo adicionado.")
                     st.rerun()
                 else:
                     st.info("Vínculo já existia.")
@@ -482,10 +523,17 @@ def render() -> None:
                 st.error("Informe CNPJ e Código do Fornecedor.")
 
         if salvar:
+            classe_key = f"edit_{sel}_classe"
+            id_sess = st.session_state.get(classe_key)
+            classe_id_efetivo = (
+                st.session_state[classe_key]
+                if classe_key in st.session_state
+                else dados["classe_id"]
+            )
+            antes = {"classe_id": atual.classe_id, "classe_nome": atual.classe_nome}
             atual.descricao               = dados["descricao"]
-            atual.classe_id               = dados["classe_id"]
-            # classe_nome será atualizado pelo upsert_produto via cache.
-            cls = classe_por_id(dados["classe_id"])
+            atual.classe_id               = classe_id_efetivo
+            cls = classe_por_id(classe_id_efetivo)
             atual.classe_nome             = cls.nome if cls else ""
             atual.ncm                     = dados["ncm"]
             atual.qtd                     = float(dados["qtd"])
@@ -512,7 +560,21 @@ def render() -> None:
                 atual.adicionar_vinculo(cnpj, codf, nome)
             upsert_produto(atual)
             recalcular_resultados()
-            st.success(f"✅ Produto '{sel}' atualizado.")
+            if _debug_cadastro_ativo():
+                st.session_state["_cadastro_debug_salvar"] = {
+                    "acao":               "editar",
+                    "codigo":             sel,
+                    "antes":              antes,
+                    "dados_classe_id":    dados["classe_id"],
+                    "session_classe_id":  id_sess,
+                    "classe_id_efetivo":  classe_id_efetivo,
+                    "depois_upsert": {
+                        "classe_id":   atual.classe_id,
+                        "classe_nome": atual.classe_nome,
+                    },
+                }
+            definir_flash("success", f"✅ Produto '{sel}' atualizado.")
+            st.session_state.pop(f"edit_{sel}_classe", None)
             st.rerun()
 
         st.divider()
@@ -529,7 +591,10 @@ def render() -> None:
                         if i not in idx_remover
                     ]
                     upsert_produto(atual)
-                    st.success(f"{len(idx_remover)} vínculo(s) removido(s).")
+                    definir_flash(
+                        "success",
+                        f"{len(idx_remover)} vínculo(s) removido(s).",
+                    )
                     st.rerun()
             else:
                 st.caption("Sem vínculos cadastrados.")
@@ -544,5 +609,5 @@ def render() -> None:
         if st.button("🗑️ Excluir", type="primary", disabled=not confirm):
             remover_produto(sel)
             recalcular_resultados()
-            st.success(f"Produto '{sel}' excluído.")
+            definir_flash("success", f"Produto '{sel}' excluído.")
             st.rerun()

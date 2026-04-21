@@ -100,6 +100,7 @@ def exportar_resultado_xlsx(
         ("Custo Final (R$)",          14, "center"),
         ("Custos Op. (R$)",           13, "center"),
         ("% Impostos",                12, "center"),
+        ("% ICMS embutido no DAS",    16, "center"),
         ("% Comissão",                12, "center"),
         ("% Financeiro",              12, "center"),
         ("Margem Desejada",           14, "center"),
@@ -144,7 +145,7 @@ def exportar_resultado_xlsx(
     fmts = [
         None, None, None, None,
         MOEDA4, MOEDA4, MOEDA4, MOEDA4, MOEDA4, MOEDA4, MOEDA,
-        PERC, PERC, PERC, PERC,
+        PERC, PERC, PERC, PERC, PERC,
         MOEDA, MOEDA, MOEDA,
         PERC1, PERC1, None,
     ]
@@ -169,6 +170,7 @@ def exportar_resultado_xlsx(
             d["Custo Final (R$)"],
             d["Custos Op. (R$)"],
             d["% Impostos s/ Venda"],
+            float(params.aliq_icms_proprio) / 100,
             d["% Comissão+Gateway"],
             d["% Financeiro"],
             d["Margem Desejada"],
@@ -183,15 +185,15 @@ def exportar_resultado_xlsx(
         for col, (val, (_, _, align_h), fmt) in enumerate(zip(vals, campos, fmts), 1):
             c = ws_r.cell(row=row, column=col, value=val)
             # Cor especial para colunas de resultado (a partir de "Preço Mínimo").
-            if col >= 16:
+            if col >= 17:
                 cell_bg = "E2EFDA" if n%2 else "C6EFCE"
             else:
                 cell_bg = bg
-            # "Margem Líq. Real" agora é a coluna 20 (era 19 sem a coluna Classe).
-            if col == 20 and isinstance(val, float) and val < 0:
+            # "Margem Líq. Real" está na coluna 21.
+            if col == 21 and isinstance(val, float) and val < 0:
                 c.font = _fnt(bold=True, color="9C0006")
                 cell_bg = "FFC7CE"
-            elif col == 20 and isinstance(val, float) and val >= 0:
+            elif col == 21 and isinstance(val, float) and val >= 0:
                 c.font = _fnt(bold=True, color="276221")
             else:
                 c.font = _fnt(color="000000" if col not in [1] else "000000")

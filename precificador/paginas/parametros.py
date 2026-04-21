@@ -8,6 +8,7 @@ import streamlit as st
 
 from models.produto import ParametrosGlobais
 from utils.estado import atualizar_params
+from utils.ui_feedback import definir_flash
 
 
 def render() -> None:
@@ -33,10 +34,12 @@ def render() -> None:
                 help="Simples: consulte o PGDAS. Lucro Presumido ≈ 11,33%. Lucro Real: carga efetiva.")
         with c3:
             aliq_icms_proprio = st.number_input(
-                "ICMS Próprio s/ Venda (%)",
+                "ICMS embutido no DAS / ICMS Próprio s/ Venda (%)",
                 min_value=0.0, max_value=30.0, value=float(p.aliq_icms_proprio),
                 step=0.1, format="%.2f",
-                help="No Simples Nacional, manter 0% (incluso no DAS).")
+                help="No Simples, representa o ICMS embutido no DAS para produtos ST "
+                     "(alíquota efetiva = DAS - este valor). Nos demais cenários, "
+                     "permanece como ICMS próprio sobre venda.")
 
         c4, _, _ = st.columns(3)
         with c4:
@@ -53,6 +56,9 @@ def render() -> None:
                     "PIS/COFINS não creditáveis neste regime.")
         elif regime == "Lucro Real":
             st.info("ℹ️ **Lucro Real**: créditos de ICMS e PIS/COFINS (padrão 9,25%).")
+        elif regime == "Simples Nacional":
+            st.info("ℹ️ **Simples Nacional**: para produtos com ST, a carga efetiva de "
+                    "impostos na venda considera **DAS - ICMS embutido no DAS**.")
 
         st.divider()
 
@@ -120,7 +126,11 @@ def render() -> None:
             aliq_credito_pis_cofins   = aliq_cred_pis_g,
         )
         atualizar_params(novos)
-        st.success("✅ Parâmetros salvos! Resultados recalculados.")
+        definir_flash(
+            "success",
+            "✅ Parâmetros salvos! Resultados recalculados.",
+        )
+        st.rerun()
 
     st.divider()
     st.subheader("📊 Resumo dos Parâmetros")

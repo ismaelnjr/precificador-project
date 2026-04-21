@@ -15,21 +15,18 @@ def render() -> None:
                     "defaults fiscais e margem desejada.")
         if st.button("Ir para Parâmetros →", key="btn_param"):
             st.session_state["pagina"] = "⚙️ Parâmetros Globais"
-            st.rerun()
     with col2:
         st.markdown("### 2️⃣ Importar Produtos")
         st.markdown("Importe via XML NF-e (vinculando código interno por fornecedor) "
                     "ou planilha. Também dá para cadastrar manual.")
         if st.button("Ir para Importar →", key="btn_imp"):
             st.session_state["pagina"] = "📦 Importar Produtos"
-            st.rerun()
     with col3:
         st.markdown("### 3️⃣ Cadastrar e Precificar")
         st.markdown("Refine cada produto com parâmetros fiscais individuais "
                     "— vazios herdam do global — e veja os preços calculados.")
         if st.button("Ir para Cadastro →", key="btn_cad"):
             st.session_state["pagina"] = "📋 Cadastro de Produtos"
-            st.rerun()
 
     st.divider()
     st.markdown("#### ℹ️ Fórmula base de precificação")

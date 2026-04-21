@@ -24,6 +24,8 @@ Estrutura cacheada no session_state (quando uma empresa está selecionada):
     resultados           → list[ResultadoPrecificacao] recalculado
     itens_xml_pendentes  → itens crus de XML aguardando vínculo
     avisos_import        → avisos de importação
+
+Mensagens pós-rerun ficam em ``utils.ui_feedback`` e usam ``_ui_flash``.
 """
 from __future__ import annotations
 import re
@@ -345,11 +347,10 @@ def upsert_produto(produto: Produto) -> int:
 
     empresa_id = _empresa_id_atual()
     pid = repo.upsert_produto(empresa_id, produto)
-    # Garante classe_nome atualizado via cache (fallback se o repo não populou).
-    if not produto.classe_nome:
-        classe = classe_por_id(produto.classe_id)
-        if classe is not None:
-            produto.classe_nome = classe.nome
+    # Alinha rótulo da classe ao id após persistir (evita classe_nome antigo na UI).
+    classe = classe_por_id(produto.classe_id)
+    if classe is not None:
+        produto.classe_nome = classe.nome or ""
     st.session_state.setdefault("produtos", {})[produto.codigo_interno] = produto
     st.session_state.setdefault("produto_ids", {})[produto.codigo_interno] = pid
     return pid

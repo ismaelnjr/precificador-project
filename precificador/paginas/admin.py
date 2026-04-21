@@ -8,6 +8,7 @@ import pandas as pd
 from auth import sessao
 from db import repositorios as repo
 from utils.formato import formatar_cnpj, input_cnpj
+from utils.ui_feedback import definir_flash
 
 
 def render() -> None:
@@ -64,9 +65,10 @@ def _aba_empresas() -> None:
     if criar:
         try:
             e = repo.criar_empresa(cnpj, nome)
-            st.success(
+            definir_flash(
+                "success",
                 f"✅ Empresa '{e['nome']}' criada "
-                f"(CNPJ {formatar_cnpj(e['cnpj'])})."
+                f"(CNPJ {formatar_cnpj(e['cnpj'])}).",
             )
             # Atualiza a lista de empresas do admin na sessão
             sessao.recarregar_empresas_autorizadas()
@@ -88,7 +90,7 @@ def _aba_empresas() -> None:
             if st.button("💾 Salvar", width="stretch", key="adm_emp_salvar"):
                 try:
                     repo.atualizar_empresa(emp["id"], novo_nome)
-                    st.success("Atualizado.")
+                    definir_flash("success", "Atualizado.")
                     st.rerun()
                 except ValueError as ex:
                     st.error(str(ex))
@@ -102,7 +104,10 @@ def _aba_empresas() -> None:
                           width="stretch",
                           key="adm_emp_remover"):
                 repo.remover_empresa(emp["id"])
-                st.warning(f"Empresa '{emp['nome']}' removida.")
+                definir_flash(
+                    "warning",
+                    f"Empresa '{emp['nome']}' removida.",
+                )
                 sessao.recarregar_empresas_autorizadas()
                 st.rerun()
 
@@ -134,7 +139,10 @@ def _aba_usuarios() -> None:
     if criar:
         try:
             u = repo.criar_usuario(username, senha, nome, is_admin)
-            st.success(f"✅ Usuário '{u['username']}' criado.")
+            definir_flash(
+                "success",
+                f"✅ Usuário '{u['username']}' criado.",
+            )
             st.rerun()
         except ValueError as ex:
             st.error(str(ex))
@@ -166,7 +174,7 @@ def _aba_usuarios() -> None:
                     )
                     if nova_senha:
                         repo.definir_senha(u["id"], nova_senha)
-                    st.success("Usuário atualizado.")
+                    definir_flash("success", "Usuário atualizado.")
                     st.rerun()
                 except ValueError as ex:
                     st.error(str(ex))
@@ -182,7 +190,10 @@ def _aba_usuarios() -> None:
                     st.error("Você não pode remover sua própria conta.")
                 else:
                     repo.remover_usuario(u["id"])
-                    st.warning(f"Usuário '{u['username']}' removido.")
+                    definir_flash(
+                        "warning",
+                        f"Usuário '{u['username']}' removido.",
+                    )
                     st.rerun()
 
 
@@ -229,7 +240,7 @@ def _aba_vinculos() -> None:
                   key="adm_vinc_salvar"):
         try:
             repo.set_vinculos_usuario(u["id"], novos_ids)
-            st.success("✅ Vínculos atualizados.")
+            definir_flash("success", "✅ Vínculos atualizados.")
             # Se o usuário logado foi alterado, recarrega sua lista
             eu = sessao.get_usuario_atual()
             if eu and eu["id"] == u["id"]:
