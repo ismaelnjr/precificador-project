@@ -17,9 +17,16 @@ Execução:
     streamlit run app.py
 """
 import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
+
+_pkg_dir = os.path.dirname(os.path.abspath(__file__))
+_repo_root = os.path.dirname(_pkg_dir)
+# Ordem: diretório do app (``utils``, ``paginas``, …); raiz do repo (pacote ``precificador``).
+sys.path.insert(0, _repo_root)
+sys.path.insert(0, _pkg_dir)
 
 import streamlit as st
+
+from precificador import __version__ as VERSAO_PRODUTO
 
 from utils.estado import (
     init_estado, recalcular_resultados, carregar_empresa, empresa_carregada,
@@ -32,8 +39,6 @@ from paginas import (
     PAGINAS_APP, PAGINA_ADMIN,
     render_login, render_selecao_empresa,
 )
-
-VERSAO_PRODUTO = os.getenv("APP_VERSION", "não informada")
 
 
 def render_rodape() -> None:
