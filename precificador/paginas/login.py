@@ -7,7 +7,7 @@ from db import repositorios as repo
 
 def render() -> None:
     st.title("🔐 Entrar")
-    st.caption("Informe suas credenciais para acessar o Precificador.")
+    st.caption("Informe suas credenciais para acessar o Precificador Inteligente.")
 
     with st.form("form_login"):
         username = st.text_input("Usuário", placeholder="admin")
@@ -22,4 +22,3 @@ def render() -> None:
             return
         sessao.login(u)
         st.success(f"Bem-vindo(a), {u.get('nome') or u['username']}!")
-        st.rerun()

@@ -3,7 +3,7 @@ import streamlit as st
 
 
 def render() -> None:
-    st.title("💰 Precificador E-commerce")
+    st.title("💰 Precificador Inteligente")
     st.markdown("**Calcule o preço mínimo de venda de cada produto com base "
                 "nos seus custos fiscais e operacionais reais.**")
     st.divider()

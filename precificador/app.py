@@ -35,7 +35,7 @@ from paginas import (
 
 # ─── Configuração da página ───────────────────────────────────────────────────
 st.set_page_config(
-    page_title  = "Precificador de produtos",
+    page_title  = "Precificador Inteligente",
     page_icon   = "💰",
     layout      = "wide",
     initial_sidebar_state = "expanded",
@@ -43,9 +43,21 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    [data-testid="stSidebar"] { background: #1F3864; }
+    [data-testid="stSidebar"] {
+        background: #1F3864;
+        min-width: 320px !important;
+        max-width: 320px !important;
+    }
+    [data-testid="stSidebar"] > div:first-child {
+        min-width: 320px !important;
+        max-width: 320px !important;
+    }
     [data-testid="stSidebar"] * { color: #FFFFFF !important; }
-    [data-testid="stSidebar"] .stRadio label { font-size: 15px; padding: 4px 0; }
+    [data-testid="stSidebar"] .stRadio label { font-size: 13px; padding: 3px 0; }
+    [data-testid="stSidebar"] .stRadio label p {
+        font-size: 13px !important;
+        white-space: nowrap;
+    }
 
     [data-testid="stMetric"] {
         background:#f0f4ff;
@@ -102,6 +114,10 @@ init_estado()
 # ─── Gate 1: login ────────────────────────────────────────────────────────────
 if not sessao.esta_logado():
     render_login()
+    # Se o login acabou de ocorrer, reexecuta para renderizar a próxima
+    # tela "limpa" (seleção de empresa), sem manter o formulário acima.
+    if sessao.esta_logado():
+        st.rerun()
     st.stop()
 
 
@@ -117,7 +133,7 @@ if empresa is None:
     empresas = st.session_state.get("empresas_autorizadas") or []
     if is_admin and not empresas:
         with st.sidebar:
-            st.markdown("## 💰 Precificador")
+            st.markdown("## 💰 Precificador Inteligente")
             st.caption(f"👤 {usuario.get('nome') or usuario['username']} (admin)")
             st.divider()
             st.info("Sem empresas cadastradas ainda. Use a Administração para criar.")
@@ -148,7 +164,7 @@ if is_admin:
     ROTULOS_PAGINAS = ROTULOS_PAGINAS + [PAGINA_ADMIN[0]]
 
 with st.sidebar:
-    st.markdown("## 💰 Precificador\n### E-commerce")
+    st.markdown("## 💰 Precificador Inteligente")
     st.caption(f"👤 **{usuario.get('nome') or usuario['username']}**"
                f"{' — admin' if is_admin else ''}")
     st.markdown(f"### 🏢 {empresa['nome']}")
@@ -176,13 +192,14 @@ with st.sidebar:
     if pagina_atual not in ROTULOS_PAGINAS:
         pagina_atual = ROTULOS_PAGINAS[0]
 
-    pagina = st.radio(
-        "Navegação",
-        ROTULOS_PAGINAS,
-        index=ROTULOS_PAGINAS.index(pagina_atual),
-        label_visibility="collapsed",
-    )
-    st.session_state["pagina"] = pagina
+    with st.expander("📂 Menu", expanded=True):
+        pagina = st.radio(
+            "Navegação",
+            ROTULOS_PAGINAS,
+            index=ROTULOS_PAGINAS.index(pagina_atual),
+            label_visibility="collapsed",
+        )
+        st.session_state["pagina"] = pagina
 
     st.divider()
     n_prod = len(st.session_state.get("produtos", {}))

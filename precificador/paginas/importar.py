@@ -81,6 +81,11 @@ def _selectbox_classe_destino() -> int | None:
     )
 
 
+def _nome_classe_por_id(classes: list[ClasseProduto], classe_id: int) -> str:
+    """Retorna o nome da classe para exibição em widgets."""
+    return next((c.nome for c in classes if c.id == classe_id), str(classe_id))
+
+
 def render() -> None:
     st.title("📦 Importar Produtos")
 
@@ -111,7 +116,8 @@ def render() -> None:
         st.markdown("### Importar XML de Nota Fiscal (NF-e)")
         st.caption("O app identifica itens já vinculados pelo par "
                    "**(CNPJ do fornecedor, código do fornecedor no XML)**. "
-                   "Para itens não vinculados, informe o código interno. "
+                   "Para itens não vinculados, informe o código interno e a "
+                   "**classe do novo produto (obrigatória por item)**. "
                    "Depois, o app **sugere** aplicar ST, FCP e DIFAL quando "
                    "detecta no XML — você pode **aceitar** cada sugestão "
                    "ou **rejeitar** (o bloco passa a usar os parâmetros globais).")
@@ -196,6 +202,8 @@ def render() -> None:
 
             codigos_cad = sorted(cadastro.keys())
             opcoes_sel  = ["— Criar novo produto —"] + codigos_cad
+            classes_disponiveis = [c for c in listar_classes() if c.id is not None]
+            opcoes_classe = [int(c.id) for c in classes_disponiveis]
 
             decisoes_pendentes = {}
             aceites = {}  # por (tipo, idx): {"st": bool, "fcp": bool, "difal": bool}
@@ -213,7 +221,7 @@ def render() -> None:
                 flags    = it["_flags"]
                 with st.container(border=True):
                     # Linha 1: descrição + seleção de código interno + preço de venda
-                    cc1, cc2, cc3 = st.columns([3, 2, 1.5])
+                    cc1, cc2, cc3 = st.columns([3.2, 3.2, 1.8])
                     with cc1:
                         st.markdown(f"**{it['descricao']}**")
                         st.caption(
@@ -241,15 +249,39 @@ def render() -> None:
                                 opcoes_sel, key=f"{key_base}_esc",
                             )
                             if escolha == opcoes_sel[0]:
-                                col_txt, col_btn = st.columns([3, 1])
+                                col_txt, col_cls, col_btn = st.columns(
+                                    [2.5, 2.6, 1.3], vertical_alignment="bottom"
+                                )
+                                with col_txt:
+                                    novo_cod = st.text_input(
+                                        "Novo código *",
+                                        key=f"{key_base}_novo",
+                                        placeholder="Ex: SKU-0001",
+                                        help="Digite um código específico ou "
+                                             "clique em “Gerar SKU”.",
+                                    )
+                                with col_cls:
+                                    classe_item = st.selectbox(
+                                        "Classe do novo produto *",
+                                        [None] + opcoes_classe,
+                                        index=0,
+                                        format_func=lambda cid: (
+                                            "— Selecione a classe —"
+                                            if cid is None else
+                                            _nome_classe_por_id(
+                                                classes_disponiveis, int(cid)
+                                            )
+                                        ),
+                                        key=f"{key_base}_classe_novo",
+                                        help="Seleção obrigatória para criar "
+                                             "produto novo a partir deste item.",
+                                    )
                                 with col_btn:
-                                    st.markdown("<div style='height: 1.75rem'></div>",
-                                                unsafe_allow_html=True)
                                     if st.button(
-                                        "🎯 Gerar SKU",
+                                        "Gerar SKU",
                                         key=f"{key_base}_gen",
                                         help="Gera o próximo SKU sequencial "
-                                             "(SKU-0001, SKU-0002, …). Você pode "
+                                             "(SKU-0001, SKU-0002, ...). Você pode "
                                              "editar o valor depois.",
                                         width="stretch",
                                     ):
@@ -265,17 +297,19 @@ def render() -> None:
                                             proximo_sku_sequencial(reservados)
                                         )
                                         st.rerun()
-                                with col_txt:
-                                    novo_cod = st.text_input(
-                                        "Novo código",
-                                        key=f"{key_base}_novo",
-                                        placeholder="Ex: SKU-0001",
-                                        help="Digite um código específico ou "
-                                             "clique em “Gerar SKU”.",
+                                if classe_item is None:
+                                    st.markdown(
+                                        "<span style='display:inline-block;"
+                                        "padding:0.15rem 0.5rem;border-radius:999px;"
+                                        "font-size:0.75rem;font-weight:600;"
+                                        "background:#3a1111;color:#ffb3b3;"
+                                        "border:1px solid #7c2f2f;'>"
+                                        "Classe obrigatória pendente</span>",
+                                        unsafe_allow_html=True,
                                     )
-                                decisoes_pendentes[idx] = ("novo", novo_cod)
+                                decisoes_pendentes[idx] = ("novo", novo_cod, classe_item)
                             else:
-                                decisoes_pendentes[idx] = ("existente", escolha)
+                                decisoes_pendentes[idx] = ("existente", escolha, None)
 
                     with cc3:
                         preco_atual = 0.0
@@ -290,7 +324,7 @@ def render() -> None:
                                         preco_atual = 0.0
                         canal_nome = canal_ativo().nome if canal_ativo() else "—"
                         preco_v = st.number_input(
-                            f"Preço de Venda no canal '{canal_nome}' (R$) — opcional",
+                            f"Preço de Venda '{canal_nome}' (R$)",
                             min_value=0.0,
                             max_value=1e7,
                             value=preco_atual,
@@ -479,13 +513,22 @@ def render() -> None:
 
                 # Pendentes (podem criar novos ou atualizar existentes)
                 for idx, it in enumerate(pendentes):
-                    tipo_dec, valor = decisoes_pendentes.get(idx, ("existente", None))
+                    tipo_dec, valor, classe_item = decisoes_pendentes.get(
+                        idx, ("existente", None, None)
+                    )
                     ac = aceites.get(("p", idx), {})
                     pv = precos_venda.get(("p", idx), 0.0)
                     if tipo_dec == "novo":
                         cod = (valor or "").strip()
                         if not cod:
                             erros.append(f"Item '{it['descricao']}': código interno vazio.")
+                            continue
+                        if classe_item is None:
+                            erros.append(
+                                f"Item '{it['descricao']}' "
+                                f"(cód. fornecedor '{it['cod_fornecedor']}'): "
+                                "selecione a classe do novo produto."
+                            )
                             continue
                         if cod in cadastro:
                             erros.append(
@@ -496,7 +539,7 @@ def render() -> None:
                             codigo_interno = cod,
                             descricao      = it["descricao"],
                             ncm            = it["ncm"],
-                            classe_id      = classe_destino_id,
+                            classe_id      = int(classe_item),
                         )
                         aplicar_item_no_produto(
                             novo, it,
