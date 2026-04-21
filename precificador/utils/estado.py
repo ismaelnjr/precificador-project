@@ -17,6 +17,7 @@ Estrutura cacheada no session_state (quando uma empresa está selecionada):
     params               → ParametrosGlobais (dataclass)
     canais               → dict[int, CanalVenda] indexado por canal_id
     canal_ativo_id       → int | None  (id do canal ativo)
+    classes              → dict[int, ClasseProduto] indexado por classe_id
     produtos             → dict[str, Produto] indexado por codigo_interno
     produto_ids          → dict[str, int]  (codigo_interno → produto_id)
     precos_canal_ativo   → dict[str, float]  (preços praticados no canal ativo)
@@ -31,7 +32,8 @@ from typing import Optional
 import streamlit as st
 
 from models.produto import (
-    CanalVenda, ParametrosGlobais, Produto, ResultadoPrecificacao,
+    CanalVenda, ClasseProduto, ParametrosGlobais, Produto,
+    ResultadoPrecificacao,
 )
 
 
@@ -96,9 +98,17 @@ def carregar_empresa(empresa_id: int) -> None:
     canais_list = repo.listar_canais(empresa_id)
     canais_dict = {c.id: c for c in canais_list if c.id is not None}
 
+    classes_list = repo.listar_classes(empresa_id)
+    classes_dict = {c.id: c for c in classes_list if c.id is not None}
+
     produtos_pares = repo.listar_produtos(empresa_id)
     produtos_dict = {p.codigo_interno: p for _, p in produtos_pares}
     produto_ids   = {p.codigo_interno: pid for pid, p in produtos_pares}
+
+    # Garante classe_nome preenchido via cache (redundância segura).
+    for p in produtos_dict.values():
+        if not p.classe_nome and p.classe_id in classes_dict:
+            p.classe_nome = classes_dict[p.classe_id].nome
 
     # Seleciona o canal ativo: primeiro canal ativo (ou qualquer um se todos
     # estiverem desativados). Mantém o canal atual se ainda pertencer à empresa.
@@ -115,6 +125,7 @@ def carregar_empresa(empresa_id: int) -> None:
     st.session_state["params"]               = params
     st.session_state["canais"]               = canais_dict
     st.session_state["canal_ativo_id"]       = canal_ativo_id
+    st.session_state["classes"]              = classes_dict
     st.session_state["produtos"]             = produtos_dict
     st.session_state["produto_ids"]          = produto_ids
     st.session_state["precos_canal_ativo"]   = precos_canal
@@ -224,6 +235,102 @@ def remover_canal(canal_id: int) -> None:
         recarregar_canais()
 
 
+# ─── Classes de produto ──────────────────────────────────────────────────────
+
+def listar_classes() -> list[ClasseProduto]:
+    classes: dict = st.session_state.get("classes", {}) or {}
+    return sorted(classes.values(), key=lambda c: (c.nome or "").lower())
+
+
+def classe_por_id(classe_id: Optional[int]) -> Optional[ClasseProduto]:
+    if classe_id is None:
+        return None
+    classes: dict = st.session_state.get("classes", {}) or {}
+    return classes.get(int(classe_id))
+
+
+def classe_geral_id() -> Optional[int]:
+    """Retorna o id da classe 'Geral' (se existir no cache)."""
+    for c in listar_classes():
+        if (c.nome or "").strip().lower() == "geral":
+            return c.id
+    # Fallback: primeira classe ativa ou qualquer uma.
+    ativas = [c for c in listar_classes() if c.ativo]
+    if ativas:
+        return ativas[0].id
+    todas = listar_classes()
+    return todas[0].id if todas else None
+
+
+def recarregar_classes() -> None:
+    """Recarrega a lista de classes do banco."""
+    from db import repositorios as repo
+
+    empresa_id = _empresa_id_atual()
+    classes_list = repo.listar_classes(empresa_id)
+    classes_dict = {c.id: c for c in classes_list if c.id is not None}
+    st.session_state["classes"] = classes_dict
+    # Reatualiza classe_nome nos produtos em cache.
+    produtos: dict = st.session_state.get("produtos", {}) or {}
+    for p in produtos.values():
+        p.classe_nome = (classes_dict.get(p.classe_id).nome
+                         if p.classe_id in classes_dict else "")
+
+
+def criar_classe(classe: ClasseProduto) -> ClasseProduto:
+    from db import repositorios as repo
+
+    empresa_id = _empresa_id_atual()
+    nova = repo.criar_classe(empresa_id, classe)
+    classes: dict = st.session_state.setdefault("classes", {})
+    classes[nova.id] = nova
+    return nova
+
+
+def atualizar_classe(classe_id: int, classe: ClasseProduto) -> ClasseProduto:
+    from db import repositorios as repo
+
+    atual = repo.atualizar_classe(classe_id, classe)
+    classes: dict = st.session_state.setdefault("classes", {})
+    classes[atual.id] = atual
+    produtos: dict = st.session_state.get("produtos", {}) or {}
+    for p in produtos.values():
+        if p.classe_id == atual.id:
+            p.classe_nome = atual.nome
+    return atual
+
+
+def remover_classe(classe_id: int) -> None:
+    from db import repositorios as repo
+
+    repo.remover_classe(classe_id)
+    classes: dict = st.session_state.setdefault("classes", {})
+    classes.pop(classe_id, None)
+    # Produtos que estavam vinculados foram realocados para "Geral";
+    # recarregar do banco mantém o cache coerente.
+    empresa_id = _empresa_id_atual()
+    pares = repo.listar_produtos(empresa_id)
+    produtos: dict = {p.codigo_interno: p for _, p in pares}
+    produto_ids: dict = {p.codigo_interno: pid for pid, p in pares}
+    for p in produtos.values():
+        if not p.classe_nome and p.classe_id in classes:
+            p.classe_nome = classes[p.classe_id].nome
+    st.session_state["produtos"]    = produtos
+    st.session_state["produto_ids"] = produto_ids
+    recalcular_resultados()
+
+
+def contar_produtos_por_classe() -> dict[int, int]:
+    """Conta produtos por classe usando o cache em memória."""
+    produtos: dict = st.session_state.get("produtos", {}) or {}
+    contagem: dict[int, int] = {}
+    for p in produtos.values():
+        if p.classe_id is None:
+            continue
+        contagem[p.classe_id] = contagem.get(p.classe_id, 0) + 1
+    return contagem
+
+
 # ─── Operações sobre o cadastro de produtos ──────────────────────────────────
 
 def upsert_produto(produto: Produto) -> int:
@@ -238,6 +345,11 @@ def upsert_produto(produto: Produto) -> int:
 
     empresa_id = _empresa_id_atual()
     pid = repo.upsert_produto(empresa_id, produto)
+    # Garante classe_nome atualizado via cache (fallback se o repo não populou).
+    if not produto.classe_nome:
+        classe = classe_por_id(produto.classe_id)
+        if classe is not None:
+            produto.classe_nome = classe.nome
     st.session_state.setdefault("produtos", {})[produto.codigo_interno] = produto
     st.session_state.setdefault("produto_ids", {})[produto.codigo_interno] = pid
     return pid

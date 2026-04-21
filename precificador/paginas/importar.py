@@ -2,21 +2,89 @@
 import streamlit as st
 import pandas as pd
 
-from models.produto import Produto
+from models.produto import ClasseProduto, Produto, ParametrosGlobais
 from parsers.importacao import (
     parse_xml_nfe, parse_xlsx_cadastro, gerar_template_xlsx,
+    extrair_nomes_classe_distintos_xlsx,
     resolver_itens_xml, aplicar_item_no_produto, inferir_flags_fiscais,
 )
 from utils.estado import (
     listar_produtos, upsert_produto, resetar_produtos, recalcular_resultados,
     proximo_sku_sequencial, aplicar_preco_praticado, get_preco_praticado_canal,
-    canal_ativo,
+    canal_ativo, classe_geral_id, classe_por_id, listar_classes,
+    criar_classe, recarregar_classes,
 )
 from utils.formato import formatar_cnpj
 
 
+# Campos de custo comparados entre o produto no cadastro e o item do XML
+# para detectar diferenças em itens já vinculados por (CNPJ, cód. fornecedor).
+CAMPOS_CUSTO_DIFF: list[tuple[str, str, str]] = [
+    # (label,          atributo no Produto,   chave no item do XML)
+    ("Qtd",            "qtd",                 "qtd"),
+    ("Custo Unit.",    "custo_unitario",      "custo_unit"),
+    ("IPI Unit.",      "ipi_unitario",        "ipi_unit"),
+    ("Frete Unit.",    "frete_unitario",      "frete_unit"),
+    ("ST Unit.",       "st_unitario",         "st_unit"),
+]
+TOL_CUSTO = 1e-4
+
+
+def _diff_custos_item(produto, item: dict) -> list[dict]:
+    """Lista campos de custo que divergem entre o produto atual e o item do XML."""
+    divs: list[dict] = []
+    for label, attr, chave in CAMPOS_CUSTO_DIFF:
+        try:
+            atual = float(getattr(produto, attr, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            atual = 0.0
+        try:
+            novo = float(item.get(chave, atual) or 0.0)
+        except (TypeError, ValueError):
+            novo = 0.0
+        if abs(novo - atual) > TOL_CUSTO:
+            if abs(atual) > TOL_CUSTO:
+                delta_pct = (novo - atual) / atual * 100.0
+            else:
+                delta_pct = None
+            divs.append({
+                "campo":     label,
+                "atual":     atual,
+                "xml":       novo,
+                "delta_pct": delta_pct,
+            })
+    return divs
+
+
+def _selectbox_classe_destino() -> int | None:
+    """Selectbox com a classe a ser atribuída a **produtos novos** na importação.
+    Retorna o id da classe escolhida (ou None se nenhuma classe disponível)."""
+    classes = listar_classes()
+    if not classes:
+        st.warning("Nenhuma classe cadastrada. Crie em "
+                   "**🏷️ Classes de Produto** antes de importar.")
+        return None
+    opcoes_ids = [c.id for c in classes]
+    default_id = classe_geral_id() or opcoes_ids[0]
+    idx = opcoes_ids.index(default_id) if default_id in opcoes_ids else 0
+    return st.selectbox(
+        "Classe para novos produtos",
+        opcoes_ids,
+        index=idx,
+        format_func=lambda cid: next(
+            (c.nome for c in classes if c.id == cid), str(cid)),
+        key="import_classe_destino",
+        help="Classe padrão atribuída aos produtos **criados** nesta "
+             "importação. Na planilha, a coluna opcional 'Classe' sobrepõe "
+             "este valor linha a linha; nomes de classe novos são criados "
+             "automaticamente no cadastro.",
+    )
+
+
 def render() -> None:
     st.title("📦 Importar Produtos")
+
+    classe_destino_id = _selectbox_classe_destino()
 
     with st.expander("📥 Baixar Template de Planilha (.xlsx)", expanded=False):
         st.markdown("Use este template como ponto de partida para cadastrar "
@@ -64,16 +132,6 @@ def render() -> None:
             params_globais = st.session_state["params"]
             mapeados, pendentes = resolver_itens_xml(dados_xml["itens"], cadastro)
 
-            emit = dados_xml.get("emitente", {})
-            st.info(f"**Fornecedor:** {emit.get('nome','?')}  |  "
-                    f"**CNPJ:** {formatar_cnpj(emit.get('cnpj','')) or '?'}  |  "
-                    f"**UF:** {emit.get('uf','—')} → "
-                    f"{dados_xml.get('destinatario',{}).get('uf','—')}  |  "
-                    f"**Operação:** "
-                    f"{'Interestadual' if str(dados_xml.get('id_dest'))=='2' else 'Interna'}  |  "
-                    f"**Itens:** {len(dados_xml['itens'])} "
-                    f"({len(mapeados)} vinculado(s), {len(pendentes)} pendente(s))")
-
             # Lista unificada com identificador (tipo, idx) para as chaves dos widgets
             itens_ui = (
                 [("m", i, it) for i, it in enumerate(mapeados)]
@@ -85,18 +143,52 @@ def render() -> None:
                 if "_flags" not in it:
                     it["_flags"] = inferir_flags_fiscais(it, params_globais)
 
+            # Diferenças de custo por item mapeado (cadastro × XML)
+            diffs_mapeados: dict[int, list[dict]] = {}
+            for i, it in enumerate(mapeados):
+                prod_atual = cadastro.get(it.get("codigo_interno", ""))
+                if prod_atual is None:
+                    continue
+                divs = _diff_custos_item(prod_atual, it)
+                if divs:
+                    diffs_mapeados[i] = divs
+
+            emit = dados_xml.get("emitente", {})
+            extra_diffs = (
+                f"  |  **Revisar custos:** {len(diffs_mapeados)}"
+                if diffs_mapeados else ""
+            )
+            st.info(f"**Fornecedor:** {emit.get('nome','?')}  |  "
+                    f"**CNPJ:** {formatar_cnpj(emit.get('cnpj','')) or '?'}  |  "
+                    f"**UF:** {emit.get('uf','—')} → "
+                    f"{dados_xml.get('destinatario',{}).get('uf','—')}  |  "
+                    f"**Operação:** "
+                    f"{'Interestadual' if str(dados_xml.get('id_dest'))=='2' else 'Interna'}  |  "
+                    f"**Itens:** {len(dados_xml['itens'])} "
+                    f"({len(mapeados)} vinculado(s), {len(pendentes)} pendente(s))"
+                    f"{extra_diffs}")
+
+            # Regime aproveita crédito de ICMS? (Lucro Presumido / Lucro Real)
+            permitidos_regime = ParametrosGlobais.creditos_permitidos(
+                params_globais.regime
+            )
+            checar_icms_xml = bool(permitidos_regime.get("icms"))
+
             # Resumo da inferência
             n_st    = sum(1 for _, _, it in itens_ui if it["_flags"]["sugerir_st"])
             n_difal = sum(1 for _, _, it in itens_ui if it["_flags"]["sugerir_difal"])
             n_fcp   = sum(1 for _, _, it in itens_ui if it["_flags"]["sugerir_fcp"])
+            n_diff_custo = len(diffs_mapeados)
 
             st.markdown("#### 📊 Inferência fiscal do XML")
-            r1, r2, r3 = st.columns(3)
+            r1, r2, r3, r4 = st.columns(4)
             r1.metric("Itens com ST detectada",    n_st)
             r2.metric("Itens com FCP detectado",   n_fcp)
             r3.metric("Itens com DIFAL sugerido",  n_difal)
-            if n_st + n_difal + n_fcp == 0:
-                st.caption("Nenhuma sugestão fiscal detectada para os itens desta nota.")
+            r4.metric("Itens com diff de custo",   n_diff_custo)
+            if n_st + n_difal + n_fcp == 0 and n_diff_custo == 0:
+                st.caption("Nenhuma sugestão fiscal ou diferença de custo "
+                           "detectada para os itens desta nota.")
 
             st.markdown("#### 📄 Itens do XML")
             st.caption("Para cada sugestão, marque **Aplicar** para aceitar o valor "
@@ -107,6 +199,12 @@ def render() -> None:
 
             decisoes_pendentes = {}
             aceites = {}  # por (tipo, idx): {"st": bool, "fcp": bool, "difal": bool}
+
+            # Decisão por item mapeado sobre aplicar ou rejeitar os custos do
+            # XML quando há diferenças em relação ao cadastro atual. Itens
+            # mapeados sem diferenças (ou pendentes) mantêm comportamento
+            # padrão (aplicar).
+            decisao_custos: dict[tuple[str, int], bool] = {}
 
             precos_venda: dict[tuple[str, int], float] = {}
 
@@ -153,7 +251,7 @@ def render() -> None:
                                         help="Gera o próximo SKU sequencial "
                                              "(SKU-0001, SKU-0002, …). Você pode "
                                              "editar o valor depois.",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         reservados = {
                                             (st.session_state.get(
@@ -205,6 +303,104 @@ def render() -> None:
                                  "manter o preço atual ou usar o mínimo calculado.",
                         )
                         precos_venda[(tipo, idx)] = float(preco_v or 0.0)
+
+                    # Aviso de divergência de ICMS (Lucro Presumido / Lucro Real)
+                    p_icms_xml = float(it.get("p_icms", 0.0) or 0.0)
+                    ac_icms = False
+                    ac_nao_credita_icms = False
+                    if checar_icms_xml and p_icms_xml > 0:
+                        aliq_esperada = float(params_globais.aliq_credito_icms)
+                        origem_aliq = "padrão (global)"
+                        if tipo == "m":
+                            prod_ref = cadastro.get(it.get("codigo_interno", ""))
+                            if prod_ref is not None:
+                                aliq_esperada = prod_ref.resolver_aliq_credito_icms(
+                                    params_globais
+                                )
+                                origem_aliq = (
+                                    "específica"
+                                    if prod_ref.aliq_credito_icms is not None
+                                    else "padrão (global)"
+                                )
+                        if abs(p_icms_xml - aliq_esperada) > 0.01:
+                            st.warning(
+                                f"⚠️ Alíquota de ICMS no XML "
+                                f"({p_icms_xml:.2f}%) difere da alíquota "
+                                f"de crédito {origem_aliq} do produto "
+                                f"({aliq_esperada:.2f}%). Revise antes de "
+                                "importar."
+                            )
+                            ac_icms = st.checkbox(
+                                f"Aplicar alíquota de ICMS do XML "
+                                f"({p_icms_xml:.2f}%)",
+                                value=True,
+                                key=f"{key_base}_ac_icms",
+                                help="Ao manter marcado, grava o pICMS lido "
+                                     "do XML como override no produto. "
+                                     "Desmarque para preservar a alíquota "
+                                     "atual (específica do produto ou "
+                                     "padrão global).",
+                            )
+                    elif checar_icms_xml and p_icms_xml <= 0:
+                        credita_atual = bool(params_globais.credita_icms)
+                        if tipo == "m":
+                            prod_ref = cadastro.get(it.get("codigo_interno", ""))
+                            if prod_ref is not None:
+                                credita_atual = prod_ref.resolver_credita_icms(
+                                    params_globais
+                                )
+                        if credita_atual:
+                            st.warning(
+                                "⚠️ Este item não traz ICMS no XML, mas o "
+                                "produto está configurado para creditar "
+                                "ICMS. Sugerimos desativar o crédito de "
+                                "ICMS para este produto."
+                            )
+                            ac_nao_credita_icms = st.checkbox(
+                                "Não creditar ICMS para este produto "
+                                "(XML sem ICMS)",
+                                value=True,
+                                key=f"{key_base}_ac_no_icms",
+                                help="Ao manter marcado, grava "
+                                     "'credita_icms = Não' como override "
+                                     "no produto. Desmarque para preservar "
+                                     "a configuração atual.",
+                            )
+
+                    # ── Revisão de diferenças de custo (só itens mapeados) ──
+                    if tipo == "m" and idx in diffs_mapeados:
+                        divs = diffs_mapeados[idx]
+                        with st.expander(
+                            f"⚠️ Diferenças de custo detectadas ({len(divs)}) "
+                            "— revise antes de importar",
+                            expanded=True,
+                        ):
+                            df_diff = pd.DataFrame([
+                                {
+                                    "Campo": d["campo"],
+                                    "Atual": f"{d['atual']:.4f}",
+                                    "XML":   f"{d['xml']:.4f}",
+                                    "Δ":     ("—" if d["delta_pct"] is None
+                                              else f"{d['delta_pct']:+.2f}%"),
+                                }
+                                for d in divs
+                            ])
+                            st.dataframe(
+                                df_diff, width="stretch", hide_index=True,
+                            )
+                            escolha_custos = st.radio(
+                                "Como tratar estas diferenças?",
+                                ["✅ Aplicar valores do XML",
+                                 "❌ Manter valores atuais do cadastro"],
+                                index=0,
+                                horizontal=True,
+                                key=f"{key_base}_custos",
+                                help="Esta decisão vale para todos os "
+                                     "campos de custo listados acima. As "
+                                     "sugestões fiscais (ST/FCP/DIFAL/ICMS) "
+                                     "são tratadas separadamente abaixo.",
+                            )
+                            decisao_custos[("m", idx)] = escolha_custos.startswith("✅")
 
                     # Linha 2: sugestões fiscais — só mostra o que o XML sugere
                     if flags["sugerir_st"] or flags["sugerir_fcp"] or flags["sugerir_difal"]:
@@ -259,15 +455,23 @@ def render() -> None:
                             "st":    ac_st,
                             "fcp":   ac_fcp,
                             "difal": ac_difal,
+                            "icms":  ac_icms,
+                            "nao_credita_icms": ac_nao_credita_icms,
                         }
                     else:
-                        aceites[(tipo, idx)] = {"st": False, "fcp": False, "difal": False}
+                        aceites[(tipo, idx)] = {
+                            "st":    False,
+                            "fcp":   False,
+                            "difal": False,
+                            "icms":  ac_icms,
+                            "nao_credita_icms": ac_nao_credita_icms,
+                        }
                         st.caption("_Sem sugestões fiscais para este item — "
                                    "parâmetros atuais do produto serão preservados._")
 
             st.divider()
             if st.button("📥 Aplicar Vínculos e Importar",
-                          type="primary", use_container_width=True):
+                          type="primary", width="stretch"):
                 criados = 0
                 atualizados = 0
                 erros = []
@@ -292,12 +496,16 @@ def render() -> None:
                             codigo_interno = cod,
                             descricao      = it["descricao"],
                             ncm            = it["ncm"],
+                            classe_id      = classe_destino_id,
                         )
                         aplicar_item_no_produto(
                             novo, it,
-                            aceitar_st    = ac.get("st",    False),
-                            aceitar_fcp   = ac.get("fcp",   False),
-                            aceitar_difal = ac.get("difal", False),
+                            aceitar_st       = ac.get("st",    False),
+                            aceitar_fcp      = ac.get("fcp",   False),
+                            aceitar_difal    = ac.get("difal", False),
+                            aceitar_icms     = ac.get("icms",  False),
+                            nao_credita_icms = ac.get("nao_credita_icms", False),
+                            params           = params_globais,
                         )
                         upsert_produto(novo)
                         if pv > 0:
@@ -312,9 +520,12 @@ def render() -> None:
                             continue
                         aplicar_item_no_produto(
                             existente, it,
-                            aceitar_st    = ac.get("st",    False),
-                            aceitar_fcp   = ac.get("fcp",   False),
-                            aceitar_difal = ac.get("difal", False),
+                            aceitar_st       = ac.get("st",    False),
+                            aceitar_fcp      = ac.get("fcp",   False),
+                            aceitar_difal    = ac.get("difal", False),
+                            aceitar_icms     = ac.get("icms",  False),
+                            nao_credita_icms = ac.get("nao_credita_icms", False),
+                            params           = params_globais,
                         )
                         upsert_produto(existente)
                         if pv > 0:
@@ -323,17 +534,27 @@ def render() -> None:
                         codigos_afetados.append(cod)
 
                 # Mapeados
+                custos_rejeitados = 0
                 for idx, it in enumerate(mapeados):
                     prod = cadastro.get(it["codigo_interno"])
                     if not prod:
                         continue
                     ac = aceites.get(("m", idx), {})
                     pv = precos_venda.get(("m", idx), 0.0)
+                    # Só há decisão pendente quando há diferenças; caso
+                    # contrário, aplicar_custos=True (comportamento padrão).
+                    aplicar_custos = decisao_custos.get(("m", idx), True)
+                    if idx in diffs_mapeados and not aplicar_custos:
+                        custos_rejeitados += 1
                     aplicar_item_no_produto(
                         prod, it,
-                        aceitar_st    = ac.get("st",    False),
-                        aceitar_fcp   = ac.get("fcp",   False),
-                        aceitar_difal = ac.get("difal", False),
+                        aceitar_st       = ac.get("st",    False),
+                        aceitar_fcp      = ac.get("fcp",   False),
+                        aceitar_difal    = ac.get("difal", False),
+                        aceitar_icms     = ac.get("icms",  False),
+                        nao_credita_icms = ac.get("nao_credita_icms", False),
+                        aplicar_custos   = aplicar_custos,
+                        params           = params_globais,
                     )
                     upsert_produto(prod)
                     if pv > 0:
@@ -361,6 +582,13 @@ def render() -> None:
                     st.error(er)
                 st.success(f"✅ Importação concluída: "
                            f"{criados} criado(s), {atualizados} atualizado(s).")
+                if custos_rejeitados:
+                    st.info(
+                        f"ℹ️ {custos_rejeitados} item(ns) tiveram os custos do "
+                        "XML **rejeitados** — os valores atuais do cadastro "
+                        "foram mantidos (vínculo e sugestões fiscais aplicadas "
+                        "normalmente)."
+                    )
                 if abaixo_min:
                     linhas = "\n".join(
                         f"- `{cod}`: praticado R$ {p:.2f} < mínimo R$ {m:.2f}"
@@ -379,25 +607,97 @@ def render() -> None:
     with tab_xlsx:
         st.markdown("### Importar Planilha Excel")
         st.caption("Use o template acima. A coluna **Código Interno** é obrigatória. "
-                   "Produtos existentes são atualizados; novos são criados.")
+                   "Produtos existentes são atualizados; novos são criados. "
+                   "Na coluna **Classe**, nomes ainda inexistentes são criados "
+                   "automaticamente como categorias da empresa.")
+
+        for av in st.session_state.pop("flash_xlsx", []):
+            if av.startswith("Planilha processada") or av.startswith(
+                "Classe(s) criada(s) automaticamente"
+            ):
+                st.success("✅ " + av)
+            else:
+                st.warning(av)
 
         f_xlsx = st.file_uploader("Selecione a planilha (.xlsx)",
                                    type=["xlsx"], key="upload_xlsx")
         if f_xlsx and st.button("📥 Importar Planilha", type="primary"):
-            with st.spinner("Lendo planilha..."):
-                novo_cadastro, avisos = parse_xlsx_cadastro(
-                    f_xlsx.read(), st.session_state["produtos"],
-                )
-            for av in avisos:
-                if av.startswith("Planilha processada"):
-                    st.success("✅ " + av)
+            blob = f_xlsx.read()
+            nomes_classe_sheet, err_extr = extrair_nomes_classe_distintos_xlsx(blob)
+            if err_extr:
+                st.error(err_extr)
+            else:
+                classes_por_nome = {
+                    c.nome: c.id for c in listar_classes() if c.id is not None
+                }
+                existentes_lower = {
+                    (k or "").strip().lower() for k in classes_por_nome
+                }
+                criadas_auto: list[str] = []
+                for nome in nomes_classe_sheet:
+                    n = (nome or "").strip()
+                    if not n or n.lower() in existentes_lower:
+                        continue
+                    try:
+                        nova = criar_classe(ClasseProduto(nome=n))
+                        classes_por_nome[nova.nome] = nova.id
+                        existentes_lower.add(n.lower())
+                        criadas_auto.append(nova.nome)
+                    except ValueError:
+                        recarregar_classes()
+                        classes_por_nome = {
+                            c.nome: c.id for c in listar_classes()
+                            if c.id is not None
+                        }
+                        existentes_lower = {
+                            (k or "").strip().lower() for k in classes_por_nome
+                        }
+                if criadas_auto:
+                    recarregar_classes()
+                    classes_por_nome = {
+                        c.nome: c.id for c in listar_classes()
+                        if c.id is not None
+                    }
+
+                avisos_prefixo: list[str] = []
+                if criadas_auto:
+                    avisos_prefixo.append(
+                        "Classe(s) criada(s) automaticamente a partir da planilha: "
+                        + ", ".join(criadas_auto)
+                    )
+
+                with st.spinner("Lendo planilha..."):
+                    novo_cadastro, avisos = parse_xlsx_cadastro(
+                        blob, st.session_state["produtos"],
+                        classes_por_nome=classes_por_nome,
+                        classe_default_id=classe_destino_id,
+                    )
+                avisos = avisos_prefixo + avisos
+
+                persistidos = 0
+                for prod in novo_cadastro.values():
+                    try:
+                        upsert_produto(prod)
+                        persistidos += 1
+                    except Exception as e:
+                        avisos.append(
+                            f"Falha ao salvar '{prod.codigo_interno}': {e}"
+                        )
+
+                if persistidos > 0:
+                    recalcular_resultados()
+                    st.session_state["flash_xlsx"] = avisos
+                    st.rerun()
                 else:
-                    st.warning(av)
-            # Persiste cada produto no banco (cria/atualiza) para a empresa atual
-            for prod in novo_cadastro.values():
-                upsert_produto(prod)
-            recalcular_resultados()
-            st.rerun()
+                    for av in avisos:
+                        if av.startswith("Planilha processada") or av.startswith(
+                            "Classe(s) criada(s) automaticamente"
+                        ):
+                            st.success("✅ " + av)
+                        else:
+                            st.warning(av)
+                    if not avisos:
+                        st.warning("Nenhum produto foi importado.")
 
     # ── Tab Manual ───────────────────────────────────────────────────────────
     with tab_manual:
@@ -423,7 +723,7 @@ def render() -> None:
                 st_v  = st.number_input("ST Unit. (R$)",     0.0, 1e6, 0.0, 0.01, "%.4f")
 
             add = st.form_submit_button("➕ Adicionar", type="primary",
-                                         use_container_width=True)
+                                         width="stretch")
 
         if add:
             cod = (cod or "").strip()
@@ -433,6 +733,8 @@ def render() -> None:
                 st.error("Descrição é obrigatória.")
             elif cod in st.session_state["produtos"]:
                 st.error(f"Já existe produto com código '{cod}'.")
+            elif classe_destino_id is None:
+                st.error("Classe é obrigatória. Cadastre uma classe primeiro.")
             else:
                 novo = Produto(
                     codigo_interno = cod,
@@ -443,11 +745,14 @@ def render() -> None:
                     ipi_unitario   = ipi,
                     frete_unitario = frete,
                     st_unitario    = st_v,
+                    classe_id      = classe_destino_id,
                     origem         = "manual",
                 )
                 upsert_produto(novo)
                 recalcular_resultados()
-                st.success(f"✅ '{cod}' cadastrado.")
+                cls = classe_por_id(classe_destino_id)
+                extra = f" em **{cls.nome}**" if cls else ""
+                st.success(f"✅ '{cod}' cadastrado{extra}.")
 
     # ── Lista atual ──────────────────────────────────────────────────────────
     st.divider()
@@ -455,7 +760,7 @@ def render() -> None:
     if prods:
         st.subheader(f"Produtos no cadastro ({len(prods)})")
         df_prods = pd.DataFrame([p.to_dict() for p in prods])
-        st.dataframe(df_prods, use_container_width=True, hide_index=True)
+        st.dataframe(df_prods, width="stretch", hide_index=True)
 
         if st.button("🗑️ Limpar cadastro inteiro", type="secondary"):
             resetar_produtos()

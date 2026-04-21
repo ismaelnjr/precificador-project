@@ -8,6 +8,8 @@ Hierarquia:
                             fiscais). Seções A e E.
     CanalVenda            → configurações por canal de venda (taxas, custos
                             operacionais, financeiro e margem). Seções B, C, D, F.
+    ClasseProduto         → categoria organizacional (por empresa) usada para
+                            filtrar, agrupar relatórios e exportação.
     Produto               → item do cadastro, com código interno alfanumérico e
                             parâmetros fiscais individuais (None = usa o global)
     ResultadoPrecificacao → output calculado para um Produto em um Canal
@@ -209,6 +211,26 @@ class CanalVenda:
         }
 
 
+# ─── Classe de Produto ────────────────────────────────────────────────────────
+
+@dataclass
+class ClasseProduto:
+    """
+    Categoria organizacional de produtos (por empresa). Usada para filtrar,
+    agrupar relatórios e exportar de forma segmentada. É uma lista plana
+    (sem hierarquia pai/filho) e não participa de herança fiscal.
+    """
+    nome: str = "Geral"
+    ativo: bool = True
+    id: Optional[int] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "Nome":  self.nome,
+            "Ativo": "Sim" if self.ativo else "Não",
+        }
+
+
 # ─── Produto ──────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -228,6 +250,10 @@ class Produto:
     codigo_interno: str
     descricao: str = ""
     ncm: str = ""
+
+    # ── Classe / categoria organizacional ───────────────────────────────────
+    classe_id: Optional[int] = None
+    classe_nome: str = ""           # preenchido pelos mapeadores/estado p/ exibição
 
     # ── Dados da última compra / custo de referência ────────────────────────
     qtd: float = 1.0
@@ -413,6 +439,7 @@ class Produto:
         return {
             "Código":         self.codigo_interno,
             "Descrição":      self.descricao,
+            "Classe":         self.classe_nome or "",
             "NCM":            self.ncm,
             "Qtd":            self.qtd,
             "Custo Unit.":    float(_round4(_d(self.custo_unitario))),
@@ -546,6 +573,7 @@ class ResultadoPrecificacao:
         return {
             "Código":               self.produto.codigo_interno,
             "Produto":              self.produto.descricao,
+            "Classe":               self.produto.classe_nome or "",
             "NCM":                  self.produto.ncm,
             "Canal":                self.canal.nome,
             "Custo Base (R$)":      float(self.custo_base),

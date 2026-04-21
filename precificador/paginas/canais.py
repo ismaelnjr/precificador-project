@@ -157,7 +157,7 @@ def render() -> None:
                 "Margem (%)":      float(c.margem_lucro_desejada),
             })
         df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
         st.caption("★ = canal atualmente ativo (usado na precificação).")
     else:
         st.info("Nenhum canal cadastrado ainda — comece criando o primeiro abaixo.")
@@ -175,7 +175,7 @@ def render() -> None:
         with st.container(border=True):
             dados = _form_canal("novo", None)
             criar = st.button("➕ Criar Canal", type="primary",
-                               use_container_width=True)
+                               width="stretch")
         if criar:
             nome = (dados["nome"] or "").strip()
             if not nome:
@@ -206,12 +206,12 @@ def render() -> None:
                 c_save, c_ativa = st.columns([3, 1])
                 with c_save:
                     salvar = st.button("💾 Salvar Alterações", type="primary",
-                                       use_container_width=True)
+                                       width="stretch")
                 with c_ativa:
                     ja_ativo = bool(ativo and ativo.id == atual.id)
                     tornar_ativo = st.button(
                         "★ Tornar Ativo" if not ja_ativo else "★ Já é o ativo",
-                        use_container_width=True, disabled=ja_ativo,
+                        width="stretch", disabled=ja_ativo,
                     )
 
             if salvar:

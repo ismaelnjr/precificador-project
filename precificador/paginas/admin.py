@@ -46,7 +46,7 @@ def _aba_empresas() -> None:
             {"id": e["id"], "nome": e["nome"], "cnpj": formatar_cnpj(e["cnpj"])}
             for e in empresas
         ])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
     else:
         st.info("Nenhuma empresa cadastrada.")
 
@@ -60,7 +60,7 @@ def _aba_empresas() -> None:
         with c2:
             nome = st.text_input("Razão social / Nome *")
         criar = st.form_submit_button("Criar", type="primary",
-                                       use_container_width=True)
+                                       width="stretch")
     if criar:
         try:
             e = repo.criar_empresa(cnpj, nome)
@@ -85,7 +85,7 @@ def _aba_empresas() -> None:
                                    key="adm_emp_novo_nome")
         c1, c2 = st.columns([1, 1])
         with c1:
-            if st.button("💾 Salvar", use_container_width=True, key="adm_emp_salvar"):
+            if st.button("💾 Salvar", width="stretch", key="adm_emp_salvar"):
                 try:
                     repo.atualizar_empresa(emp["id"], novo_nome)
                     st.success("Atualizado.")
@@ -99,7 +99,7 @@ def _aba_empresas() -> None:
             )
             if st.button("🗑️ Remover", type="secondary",
                           disabled=not confirmar,
-                          use_container_width=True,
+                          width="stretch",
                           key="adm_emp_remover"):
                 repo.remover_empresa(emp["id"])
                 st.warning(f"Empresa '{emp['nome']}' removida.")
@@ -117,7 +117,7 @@ def _aba_usuarios() -> None:
     st.subheader(f"Usuários ({len(usuarios)})")
     if usuarios:
         df = pd.DataFrame(usuarios)[["id", "username", "nome", "is_admin", "ativo"]]
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
 
     st.divider()
     st.markdown("### ➕ Novo Usuário")
@@ -130,7 +130,7 @@ def _aba_usuarios() -> None:
             senha    = st.text_input("Senha *", type="password")
             is_admin = st.checkbox("Administrador?")
         criar = st.form_submit_button("Criar", type="primary",
-                                       use_container_width=True)
+                                       width="stretch")
     if criar:
         try:
             u = repo.criar_usuario(username, senha, nome, is_admin)
@@ -157,7 +157,7 @@ def _aba_usuarios() -> None:
 
         cA, cB, cC = st.columns([1, 1, 1])
         with cA:
-            if st.button("💾 Salvar alterações", use_container_width=True,
+            if st.button("💾 Salvar alterações", width="stretch",
                           key="adm_u_salvar"):
                 try:
                     repo.atualizar_usuario(
@@ -175,7 +175,7 @@ def _aba_usuarios() -> None:
                                      key="adm_u_confirm")
             if st.button("🗑️ Remover", type="secondary",
                           disabled=not confirmar,
-                          use_container_width=True,
+                          width="stretch",
                           key="adm_u_remover"):
                 eu = sessao.get_usuario_atual()
                 if eu and eu["id"] == u["id"]:
@@ -224,7 +224,7 @@ def _aba_vinculos() -> None:
             novos_ids.append(emp["id"])
 
     if st.button("💾 Salvar vínculos", type="primary",
-                  use_container_width=True,
+                  width="stretch",
                   disabled=u.get("is_admin", False),
                   key="adm_vinc_salvar"):
         try:

@@ -121,7 +121,7 @@ if empresa is None:
             st.caption(f"👤 {usuario.get('nome') or usuario['username']} (admin)")
             st.divider()
             st.info("Sem empresas cadastradas ainda. Use a Administração para criar.")
-            if st.button("🚪 Sair", use_container_width=True):
+            if st.button("🚪 Sair", width="stretch"):
                 sessao.logout()
                 st.rerun()
         PAGINA_ADMIN[1]()
@@ -190,19 +190,19 @@ with st.sidebar:
     st.markdown(f"**Produtos:** {n_prod}  |  **Calculados:** {n_res}")
 
     if n_prod > 0:
-        if st.button("🔄 Recalcular tudo", use_container_width=True):
+        if st.button("🔄 Recalcular tudo", width="stretch"):
             recalcular_resultados()
             st.success("Recalculado!")
 
     st.divider()
     ncol1, ncol2 = st.columns(2)
     with ncol1:
-        if st.button("🔄 Trocar empresa", use_container_width=True):
+        if st.button("🔄 Trocar empresa", width="stretch"):
             sessao.limpar_empresa()
             st.session_state.pop("_empresa_cache_id", None)
             st.rerun()
     with ncol2:
-        if st.button("🚪 Sair", use_container_width=True):
+        if st.button("🚪 Sair", width="stretch"):
             sessao.logout()
             st.session_state.pop("_empresa_cache_id", None)
             st.rerun()

@@ -11,6 +11,9 @@ Fluxos:
   - parse_xlsx_cadastro(xlsx, cadastro_existente)
                               → cria/atualiza produtos no cadastro a partir de
                                 planilha com coluna 'Código Interno' obrigatória.
+  - extrair_nomes_classe_distintos_xlsx(xlsx)
+                              → lista nomes únicos da coluna Classe (para criar
+                                classes antes do parse, na UI).
   - gerar_template_xlsx()     → template .xlsx para preenchimento manual.
   - gerar_template_precos_xlsx(resultados)
                               → template .xlsx pré-preenchido para importar
@@ -385,13 +388,23 @@ def resolver_itens_xml(
 def aplicar_item_no_produto(
     produto: Produto,
     item: dict,
-    aceitar_st:    bool = False,
-    aceitar_fcp:   bool = False,
-    aceitar_difal: bool = False,
+    aceitar_st:      bool = False,
+    aceitar_fcp:     bool = False,
+    aceitar_difal:   bool = False,
+    aceitar_icms:    bool = False,
+    nao_credita_icms: bool = False,
+    aplicar_custos:  bool = True,
     flags: Optional[dict] = None,
+    params: Optional[ParametrosGlobais] = None,
 ) -> Produto:
     """
     Atualiza custos/quantidade de um Produto com os dados de um item XML.
+
+    Quando ``aplicar_custos=False`` (usuário rejeitou as diferenças de custo
+    detectadas em um item já vinculado), os campos ``qtd``, ``custo_unitario``,
+    ``ipi_unitario``, ``frete_unitario`` e ``st_unitario`` do produto são
+    preservados. Vínculo, NCM e sugestões fiscais continuam sendo tratados
+    normalmente.
 
     Para cada sugestão fiscal presente em ``flags`` (ou ``item['_flags']``):
       - ``aceitar_* = True``  → aplica valor sugerido no produto.
@@ -404,11 +417,12 @@ def aplicar_item_no_produto(
     O preço praticado NÃO é tratado aqui — ele é persistido no par
     (produto, canal) via ``utils.estado.aplicar_preco_praticado``.
     """
-    produto.qtd             = float(item.get("qtd",         produto.qtd))
-    produto.custo_unitario  = float(item.get("custo_unit",  produto.custo_unitario))
-    produto.ipi_unitario    = float(item.get("ipi_unit",    produto.ipi_unitario))
-    produto.frete_unitario  = float(item.get("frete_unit",  produto.frete_unitario))
-    produto.st_unitario     = float(item.get("st_unit",     produto.st_unitario))
+    if aplicar_custos:
+        produto.qtd             = float(item.get("qtd",         produto.qtd))
+        produto.custo_unitario  = float(item.get("custo_unit",  produto.custo_unitario))
+        produto.ipi_unitario    = float(item.get("ipi_unit",    produto.ipi_unitario))
+        produto.frete_unitario  = float(item.get("frete_unit",  produto.frete_unitario))
+        produto.st_unitario     = float(item.get("st_unit",     produto.st_unitario))
     if not produto.ncm and item.get("ncm"):
         produto.ncm = item["ncm"]
     produto.origem = "xml"
@@ -448,6 +462,28 @@ def aplicar_item_no_produto(
             produto.tem_difal  = None
             produto.aliq_difal = None
 
+    # ── ICMS (crédito de entrada) ────────────────────────────────────────────
+    # Aplica somente quando o usuário confirmou (aceitar_icms=True) e o
+    # regime permite crédito de ICMS (Lucro Presumido/Real). Se o valor
+    # do XML coincidir com o global, zera o override para que o produto
+    # herde do global.
+    if params is not None and aceitar_icms:
+        permitidos = ParametrosGlobais.creditos_permitidos(params.regime)
+        p_icms_xml = float(item.get("p_icms", 0.0) or 0.0)
+        if permitidos.get("icms") and p_icms_xml > 0:
+            aliq_global = float(params.aliq_credito_icms)
+            if abs(p_icms_xml - aliq_global) <= 0.01:
+                produto.aliq_credito_icms = None
+            else:
+                produto.aliq_credito_icms = p_icms_xml
+
+    # Se o XML não trouxe ICMS e o usuário confirmou, desativa crédito
+    # de ICMS no produto (override explícito).
+    if params is not None and nao_credita_icms:
+        permitidos = ParametrosGlobais.creditos_permitidos(params.regime)
+        if permitidos.get("icms"):
+            produto.credita_icms = False
+
     return produto
 
 
@@ -457,6 +493,7 @@ COLUNAS_CADASTRO = {
     "codigo_interno":          ["Código Interno", "Codigo Interno", "Código",
                                 "Codigo", "SKU", "Cód. Interno"],
     "descricao":               ["Descrição", "Descricao", "Produto"],
+    "classe":                  ["Classe", "Categoria", "Grupo"],
     "ncm":                     ["NCM", "ncm"],
     "qtd":                     ["Qtd", "Quantidade"],
     "custo_unitario":          ["Custo Unit.", "Custo Unitário", "Custo"],
@@ -490,14 +527,24 @@ COLUNAS_CADASTRO = {
 }
 
 
+def _normalizar_header(h: str) -> str:
+    """Normaliza um nome de coluna para comparação tolerante.
+
+    Remove asteriscos (marcadores de obrigatoriedade do template),
+    espaços extras e padroniza para minúsculas.
+    """
+    return str(h or "").strip().lstrip("*").strip().lower()
+
+
 def _mapear_colunas(headers: list[str]) -> dict[str, Optional[str]]:
-    headers_lower = {h.strip().lower(): h for h in headers}
+    headers_lower = {_normalizar_header(h): h for h in headers if str(h or "").strip()}
     mapa: dict[str, Optional[str]] = {}
     for campo, candidatos in COLUNAS_CADASTRO.items():
         encontrado = None
         for cand in candidatos:
-            if cand.strip().lower() in headers_lower:
-                encontrado = headers_lower[cand.strip().lower()]
+            chave = _normalizar_header(cand)
+            if chave in headers_lower:
+                encontrado = headers_lower[chave]
                 break
         mapa[campo] = encontrado
     return mapa
@@ -526,13 +573,125 @@ def _cell_opt_float(v):
         return None
 
 
+def _ler_dataframe_cadastro_xlsx(source) -> tuple[Optional[object], Optional[dict], Optional[str]]:
+    """Lê a planilha de cadastro e devolve ``(df, mapa_colunas)`` ou ``(None, None, erro)``.
+
+    ``mapa_colunas`` é o retorno de :func:`_mapear_colunas` (chaves internas →
+    nome da coluna na planilha).
+    """
+    if not _PANDAS:
+        return None, None, "pandas não instalado. Execute: pip install pandas openpyxl"
+
+    try:
+        src = io.BytesIO(source) if isinstance(source, bytes) else source
+        df_raw = pd.read_excel(src, dtype=str, engine="openpyxl", header=None)
+    except Exception as e:
+        return None, None, f"Erro ao ler Excel: {e}"
+
+    if df_raw.empty:
+        return None, None, "Planilha vazia."
+
+    candidatos_cod = {_normalizar_header(c)
+                      for c in COLUNAS_CADASTRO["codigo_interno"]}
+    header_row: Optional[int] = None
+    for i in range(min(len(df_raw), 15)):
+        linha = [_normalizar_header(v) if not pd.isna(v) else ""
+                 for v in df_raw.iloc[i].tolist()]
+        if any(cell in candidatos_cod for cell in linha):
+            header_row = i
+            break
+
+    if header_row is None:
+        primeiras = [
+            ", ".join(str(v) for v in df_raw.iloc[i].tolist()
+                      if not pd.isna(v))
+            for i in range(min(len(df_raw), 5))
+        ]
+        return None, None, (
+            "Coluna 'Código Interno' não encontrada nas primeiras linhas. "
+            f"Conteúdo lido: {' | '.join(primeiras)}. "
+            "Baixe o template para ver o formato esperado."
+        )
+
+    headers = ["" if pd.isna(h) else str(h).strip().lstrip("*").strip()
+               for h in df_raw.iloc[header_row].tolist()]
+
+    pulou_dicas = 0
+    if header_row + 1 < len(df_raw):
+        proxima = [str(v).strip().lower() if not pd.isna(v) else ""
+                   for v in df_raw.iloc[header_row + 1].tolist()]
+        marcadores_dica = ("vazio = usa global", "obrigatório", "obrigatorio",
+                           "sim/não", "sim/nao", "código ncm", "codigo ncm",
+                           "opcional.", "código do produto no fornecedor",
+                           "nome do produto", "observações livres",
+                           "observacoes livres")
+        if any(any(m in cell for m in marcadores_dica) for cell in proxima):
+            pulou_dicas = 1
+
+    df = df_raw.iloc[header_row + 1 + pulou_dicas:].copy()
+    df.columns = headers
+    df = df.loc[:, [c for c in df.columns if c]]
+    df = df.dropna(how="all")
+
+    mapa = _mapear_colunas(df.columns.tolist())
+
+    if not mapa.get("codigo_interno"):
+        return None, None, (
+            "Coluna 'Código Interno' não encontrada. "
+            f"Colunas detectadas: {', '.join(df.columns)}. "
+            "Baixe o template para ver o formato esperado."
+        )
+
+    return df, mapa, None
+
+
+def extrair_nomes_classe_distintos_xlsx(source) -> tuple[list[str], Optional[str]]:
+    """Lista nomes únicos da coluna **Classe** (primeira ocorrência preserva o texto).
+
+    Usado antes do parse para criar classes ainda inexistentes. Se não houver
+    coluna de classe, retorna lista vazia sem erro.
+    """
+    df, mapa, err = _ler_dataframe_cadastro_xlsx(source)
+    if err:
+        return [], err
+    assert df is not None and mapa is not None
+    col = mapa.get("classe")
+    if not col or col not in df.columns:
+        return [], None
+
+    nomes: list[str] = []
+    vistos: set[str] = set()
+    for _, row in df.iterrows():
+        v = row[col]
+        if pd.isna(v):
+            continue
+        s = str(v).strip()
+        if not s:
+            continue
+        key = s.lower()
+        if key not in vistos:
+            vistos.add(key)
+            nomes.append(s)
+    return nomes, None
+
+
 def parse_xlsx_cadastro(
     source,
     cadastro_existente: Optional[dict[str, Produto]] = None,
+    classes_por_nome: Optional[dict[str, int]] = None,
+    classe_default_id: Optional[int] = None,
 ) -> tuple[dict[str, Produto], list[str]]:
     """
     Lê planilha e devolve um DICT de produtos por código interno, já mesclado
     com o cadastro_existente (atualizando produtos existentes pelo código).
+
+    Quando ``classes_por_nome`` é informado (mapa ``nome → classe_id``),
+    a coluna opcional ``Classe`` da planilha vincula produtos a classes já
+    cadastradas (por nome, comparação sem diferenciar maiúsculas). Para linhas
+    sem classe ou quando o nome não existe no mapa, usa-se
+    ``classe_default_id`` (tipicamente a classe 'Geral'). A criação automática
+    de classes inexistentes fica a cargo da camada de UI antes de chamar esta
+    função.
     """
     if not _PANDAS:
         return {}, ["pandas não instalado. Execute: pip install pandas openpyxl"]
@@ -540,23 +699,9 @@ def parse_xlsx_cadastro(
     avisos: list[str] = []
     cadastro: dict[str, Produto] = dict(cadastro_existente or {})
 
-    try:
-        if isinstance(source, bytes):
-            source = io.BytesIO(source)
-        df = pd.read_excel(source, dtype=str, engine="openpyxl")
-        df.columns = [str(c).strip() for c in df.columns]
-        df = df.dropna(how="all")
-    except Exception as e:
-        return cadastro, [f"Erro ao ler Excel: {e}"]
-
-    mapa = _mapear_colunas(df.columns.tolist())
-
-    if not mapa.get("codigo_interno"):
-        return cadastro, [
-            "Coluna 'Código Interno' não encontrada. "
-            f"Colunas detectadas: {', '.join(df.columns)}. "
-            "Baixe o template para ver o formato esperado."
-        ]
+    df, mapa, err = _ler_dataframe_cadastro_xlsx(source)
+    if err:
+        return cadastro, [err]
 
     def _raw(row, campo):
         col = mapa.get(campo)
@@ -572,6 +717,11 @@ def parse_xlsx_cadastro(
     novos = 0
     atualizados = 0
 
+    cls_map_lower = {
+        (k or "").strip().lower(): v for k, v in (classes_por_nome or {}).items()
+    }
+    classe_avisos: set[str] = set()
+
     for _, row in df.iterrows():
         cod = _str(row, "codigo_interno")
         if not cod:
@@ -580,6 +730,7 @@ def parse_xlsx_cadastro(
         existente = cadastro.get(cod)
         descricao = _str(row, "descricao")
         ncm       = _str(row, "ncm")
+        classe_nome_row = _str(row, "classe")
 
         custo  = _cell_opt_float(_raw(row, "custo_unitario"))
         ipi    = _cell_opt_float(_raw(row, "ipi_unitario"))
@@ -610,6 +761,19 @@ def parse_xlsx_cadastro(
             if st_val is not None: produto.st_unitario    = st_val
             if qtd    is not None: produto.qtd            = qtd
             atualizados += 1
+
+        # ── Classe (opcional) ─────────────────────────────────────────────
+        if classe_nome_row:
+            cid = cls_map_lower.get(classe_nome_row.strip().lower())
+            if cid is not None:
+                produto.classe_id = int(cid)
+                produto.classe_nome = classe_nome_row.strip()
+            else:
+                classe_avisos.add(classe_nome_row.strip())
+                if produto.classe_id is None and classe_default_id is not None:
+                    produto.classe_id = int(classe_default_id)
+        elif produto.classe_id is None and classe_default_id is not None:
+            produto.classe_id = int(classe_default_id)
 
         # Parâmetros fiscais individuais (None = manter)
         for campo in (
@@ -648,6 +812,13 @@ def parse_xlsx_cadastro(
         avisos.append(f"Planilha processada: {novos} novo(s), "
                       f"{atualizados} atualizado(s).")
 
+    if classe_avisos:
+        nomes = ", ".join(sorted(classe_avisos))
+        avisos.append(
+            f"Classe(s) não cadastrada(s) e ignorada(s): {nomes}. "
+            "Produtos afetados ficaram na classe padrão."
+        )
+
     return cadastro, avisos
 
 
@@ -672,6 +843,9 @@ def gerar_template_xlsx() -> bytes:
     headers = [
         ("Código Interno",              "Obrigatório. Chave alfanumérica única.", True),
         ("Descrição",                   "Nome do produto.",                        False),
+        ("Classe",                      "Categoria organizacional (opcional). "
+                                        "Nome novo cria a classe; vazio = padrão "
+                                        "da importação.",                          False),
         ("NCM",                         "Código NCM (8 dígitos).",                 False),
         ("Qtd",                         "Quantidade da última compra.",            False),
         ("Custo Unit.",                 "Custo unitário s/ impostos (R$).",        False),
@@ -726,7 +900,8 @@ def gerar_template_xlsx() -> bytes:
     bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
 
     default_widths = {
-        "Código Interno": 16, "Descrição": 32, "NCM": 12, "Qtd": 8,
+        "Código Interno": 16, "Descrição": 32, "Classe": 16,
+        "NCM": 12, "Qtd": 8,
         "Custo Unit.": 14, "IPI Unit.": 12, "Frete Unit.": 14, "ST Unit.": 12,
         "CNPJ Fornecedor": 18, "Cód. Fornecedor": 16, "Fornecedor": 22, "Obs.": 24,
     }
@@ -755,16 +930,19 @@ def gerar_template_xlsx() -> bytes:
     ws.row_dimensions[5].height = 32
 
     exemplos = [
-        ["SKU-0001", "Notebook Dell Inspiron 15", "84713012", 5, 2850.00, 0.00, 12.50, 0.00,
+        ["SKU-0001", "Notebook Dell Inspiron 15", "Eletrônicos", "84713012", 5, 2850.00, 0.00, 12.50, 0.00,
          "Sim", 4.0, 2.0, "", "", "", "", "", "", "", "", 18.0, 18.0,
          "12345678000199", "FORN-A-001", "Distribuidora XYZ", ""],
-        ["SKU-0002", "Tênis Nike Air Max",        "64041900", 20, 180.00, 0.00, 3.50, 18.00,
+        ["SKU-0002", "Tênis Nike Air Max",        "Vestuário",   "64041900", 20, 180.00, 0.00, 3.50, 18.00,
          "Sim", 4.0, 2.0, "Sim", 12.0, "", "", "", "", "", "", "", 20.0,
          "", "", "", "ST na NF"],
-        ["SKU-0003", "Smartphone Samsung A55",    "85171231", 10, 1200.00, 0.00, 8.00, 0.00,
+        ["SKU-0003", "Smartphone Samsung A55",    "Geral",       "85171231", 10, 1200.00, 0.00, 8.00, 0.00,
          "", "", "", "", "", "", "", "", "", "", "", "", "",
          "", "", "", ""],
     ]
+    # Coluna "Descrição" (2) e "Classe" (3) alinham à esquerda; as 4 últimas
+    # (Fornecedor/Obs) são 23..26 após o acréscimo da coluna Classe.
+    colunas_left = {1, 2, 3, 23, 24, 25, 26}
     for i, ex in enumerate(exemplos):
         row = 6 + i
         bg = C_WHITE if i % 2 == 0 else C_GRAY
@@ -773,7 +951,7 @@ def gerar_template_xlsx() -> bytes:
             c.font = Font(name="Arial", size=10, color="000000")
             c.fill = PatternFill("solid", start_color=bg, end_color=bg)
             c.alignment = Alignment(
-                horizontal="left" if col in (1, 2, 22, 23, 24, 25, 26) else "center",
+                horizontal="left" if col in colunas_left else "center",
                 vertical="center",
             )
             c.border = bdr

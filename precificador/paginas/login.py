@@ -13,7 +13,7 @@ def render() -> None:
         username = st.text_input("Usuário", placeholder="admin")
         senha    = st.text_input("Senha", type="password")
         entrar   = st.form_submit_button("Entrar", type="primary",
-                                         use_container_width=True)
+                                         width="stretch")
 
     if entrar:
         u = repo.autenticar(username, senha)

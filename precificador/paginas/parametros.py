@@ -48,12 +48,10 @@ def render() -> None:
                 help="Alíquota padrão do ICMS no seu estado. Usada no cálculo do "
                      "DIFAL na entrada em compras interestaduais.")
 
-        if regime == "Simples Nacional":
-            st.info("ℹ️ **Simples Nacional** não aproveita crédito de ICMS nem PIS/COFINS.")
-        elif regime == "Lucro Presumido":
+        if regime == "Lucro Presumido":
             st.info("ℹ️ **Lucro Presumido**: crédito de ICMS permitido. "
                     "PIS/COFINS não creditáveis neste regime.")
-        else:
+        elif regime == "Lucro Real":
             st.info("ℹ️ **Lucro Real**: créditos de ICMS e PIS/COFINS (padrão 9,25%).")
 
         st.divider()
@@ -61,6 +59,9 @@ def render() -> None:
         # ── E: Defaults fiscais ──────────────────────────────────────────────
         st.subheader("E · Defaults Fiscais (podem ser sobrescritos por produto)")
         permitidos = ParametrosGlobais.creditos_permitidos(regime)
+
+        if regime == "Simples Nacional":
+            st.info("ℹ️ **Simples Nacional** não aproveita crédito de ICMS nem PIS/COFINS.")
 
         cc1, cc2, cc3 = st.columns(3)
         with cc1:
@@ -98,7 +99,7 @@ def render() -> None:
                 disabled=not (permitidos["pis_cofins"] and cred_pis_g))
 
         salvar = st.form_submit_button("💾 Salvar Parâmetros", type="primary",
-                                        use_container_width=True)
+                                        width="stretch")
 
     if salvar:
         novos = ParametrosGlobais(

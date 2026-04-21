@@ -4,8 +4,8 @@ import pandas as pd
 
 from models.produto import ParametrosGlobais, Produto
 from utils.estado import (
-    canal_ativo, listar_produtos, upsert_produto, remover_produto,
-    recalcular_resultados,
+    canal_ativo, classe_geral_id, classe_por_id, listar_classes,
+    listar_produtos, upsert_produto, remover_produto, recalcular_resultados,
 )
 from utils.formato import digitos_cnpj, formatar_cnpj, input_cnpj
 
@@ -34,8 +34,33 @@ def _render_form_produto(prefixo: str, base: Produto | None):
         descricao = st.text_input(
             "Descrição", value=b.descricao, key=f"{prefixo}_desc",
         )
-    ncm = st.text_input("NCM", value=b.ncm, placeholder="84713012",
-                         key=f"{prefixo}_ncm")
+
+    # ── Classe (obrigatória) ─────────────────────────────────────────────────
+    classes = [c for c in listar_classes() if c.ativo] or listar_classes()
+    col_cl, col_ncm = st.columns([2, 1])
+    with col_cl:
+        if not classes:
+            st.warning("Nenhuma classe cadastrada. Crie em **🏷️ Classes de Produto**.")
+            classe_id_v = None
+        else:
+            opcoes_ids = [c.id for c in classes]
+            # Seleção inicial: classe atual do produto, senão a "Geral", senão a 1ª.
+            default_id = b.classe_id
+            if default_id not in opcoes_ids:
+                default_id = classe_geral_id() or opcoes_ids[0]
+            classe_id_v = st.selectbox(
+                "Classe *",
+                opcoes_ids,
+                index=opcoes_ids.index(default_id)
+                      if default_id in opcoes_ids else 0,
+                format_func=lambda cid: next(
+                    (c.nome for c in classes if c.id == cid), str(cid)),
+                key=f"{prefixo}_classe",
+                help="Categoria organizacional — usada em filtros e relatórios.",
+            )
+    with col_ncm:
+        ncm = st.text_input("NCM", value=b.ncm, placeholder="84713012",
+                             key=f"{prefixo}_ncm")
 
     st.markdown("**Custo de referência**")
     cc1, cc2, cc3, cc4, cc5 = st.columns(5)
@@ -294,7 +319,7 @@ def _render_form_produto(prefixo: str, base: Produto | None):
             {**v, "cnpj": formatar_cnpj(v.get("cnpj", ""))}
             for v in vinc
         ])
-        st.dataframe(df_v, use_container_width=True, hide_index=True)
+        st.dataframe(df_v, width="stretch", hide_index=True)
     else:
         st.caption("Nenhum vínculo cadastrado.")
 
@@ -315,6 +340,7 @@ def _render_form_produto(prefixo: str, base: Produto | None):
     return {
         "codigo_interno":          codigo,
         "descricao":               descricao,
+        "classe_id":               classe_id_v,
         "ncm":                     ncm,
         "qtd":                     qtd,
         "custo_unitario":          custo,
@@ -348,12 +374,27 @@ def render() -> None:
 
     produtos_dict: dict[str, Produto] = st.session_state["produtos"]
     produtos_list = listar_produtos()
+    classes_disponiveis = listar_classes()
 
     # ── Tabela ─────────────────────────────────────────────────────────────────
     st.subheader(f"Produtos Cadastrados ({len(produtos_list)})")
-    if produtos_list:
-        df = pd.DataFrame([p.to_dict() for p in produtos_list])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+    produtos_visiveis = produtos_list
+    if produtos_list and classes_disponiveis:
+        nomes_classe = [c.nome for c in classes_disponiveis]
+        filtro_classes = st.multiselect(
+            "Filtrar por classe", nomes_classe,
+            default=[], key="cadastro_filtro_classes",
+            placeholder="Mostrar todas as classes",
+        )
+        if filtro_classes:
+            produtos_visiveis = [
+                p for p in produtos_list if p.classe_nome in filtro_classes
+            ]
+    if produtos_visiveis:
+        df = pd.DataFrame([p.to_dict() for p in produtos_visiveis])
+        st.dataframe(df, width="stretch", hide_index=True)
+    elif produtos_list:
+        st.info("Nenhum produto bate com o filtro selecionado.")
     else:
         st.info("Nenhum produto cadastrado. Use a aba abaixo para criar o primeiro.")
 
@@ -368,17 +409,21 @@ def render() -> None:
         with st.container(border=True):
             dados = _render_form_produto("novo", None)
             criar = st.button("➕ Criar Produto", type="primary",
-                              use_container_width=True)
+                              width="stretch")
         if criar:
             cod = (dados["codigo_interno"] or "").strip()
             if not cod:
                 st.error("Código Interno é obrigatório.")
             elif cod in produtos_dict:
                 st.error(f"Já existe produto com código '{cod}'.")
+            elif dados["classe_id"] is None:
+                st.error("Classe é obrigatória. Cadastre uma classe primeiro "
+                         "em **🏷️ Classes de Produto**.")
             else:
                 p = Produto(
                     codigo_interno          = cod,
                     descricao               = dados["descricao"],
+                    classe_id               = dados["classe_id"],
                     ncm                     = dados["ncm"],
                     qtd                     = float(dados["qtd"]),
                     custo_unitario          = float(dados["custo_unitario"]),
@@ -419,10 +464,10 @@ def render() -> None:
             dados = _render_form_produto(f"edit_{sel}", atual)
             c1, c2 = st.columns([1, 3])
             with c1:
-                adicionar_vinc = st.button("➕ Add vínculo", use_container_width=True)
+                adicionar_vinc = st.button("➕ Add vínculo", width="stretch")
             with c2:
                 salvar = st.button("💾 Salvar Alterações", type="primary",
-                                    use_container_width=True)
+                                    width="stretch")
 
         if adicionar_vinc:
             cnpj, codf, nome = dados["_novo_vinculo"]
@@ -438,6 +483,10 @@ def render() -> None:
 
         if salvar:
             atual.descricao               = dados["descricao"]
+            atual.classe_id               = dados["classe_id"]
+            # classe_nome será atualizado pelo upsert_produto via cache.
+            cls = classe_por_id(dados["classe_id"])
+            atual.classe_nome             = cls.nome if cls else ""
             atual.ncm                     = dados["ncm"]
             atual.qtd                     = float(dados["qtd"])
             atual.custo_unitario          = float(dados["custo_unitario"])

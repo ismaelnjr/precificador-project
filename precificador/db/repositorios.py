@@ -48,22 +48,25 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from models.produto import CanalVenda, ParametrosGlobais, Produto
+from models.produto import CanalVenda, ClasseProduto, ParametrosGlobais, Produto
 
 from db.engine import session_scope
 from db.mapeadores import (
     aplicar_canal_no_orm,
+    aplicar_classe_no_orm,
     aplicar_params_no_orm,
     aplicar_produto_no_orm,
     canal_orm_to_domain,
+    classe_orm_to_domain,
     params_orm_to_domain,
     produto_orm_to_domain,
     sincronizar_vinculos,
 )
 from db.models import (
     CanalVendaORM,
+    ClasseProdutoORM,
     Empresa,
     ParametrosGlobaisORM,
     ProdutoCanalPrecoORM,
@@ -125,9 +128,11 @@ def criar_empresa(cnpj: str, nome: str) -> dict:
             raise ValueError(f"CNPJ {cnpj_n} já cadastrado.")
 
         emp = Empresa(cnpj=cnpj_n, nome=nome)
-        # Cria ParametrosGlobais default (A + E) e um canal "Padrão" (B/C/D/F).
+        # Cria ParametrosGlobais default (A + E), um canal "Padrão" (B/C/D/F)
+        # e uma classe de produto "Geral" (categoria organizacional default).
         emp.parametros = ParametrosGlobaisORM()
         emp.canais.append(CanalVendaORM(nome="Padrão", ativo=True))
+        emp.classes.append(ClasseProdutoORM(nome="Geral", ativo=True))
         s.add(emp)
         s.flush()
         return _empresa_to_dict(emp)
@@ -445,6 +450,138 @@ def remover_canal(canal_id: int) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Classes de Produto (por empresa)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _garantir_classe_geral(s, empresa_id: int) -> ClasseProdutoORM:
+    """Retorna (criando se necessário) a classe 'Geral' da empresa."""
+    row = s.execute(
+        select(ClasseProdutoORM).where(
+            ClasseProdutoORM.empresa_id == empresa_id,
+            ClasseProdutoORM.nome == "Geral",
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        row = ClasseProdutoORM(empresa_id=empresa_id, nome="Geral", ativo=True)
+        s.add(row)
+        s.flush()
+    return row
+
+
+def listar_classes(empresa_id: int) -> list[ClasseProduto]:
+    with session_scope() as s:
+        rows = s.execute(
+            select(ClasseProdutoORM)
+            .where(ClasseProdutoORM.empresa_id == empresa_id)
+            .order_by(ClasseProdutoORM.nome)
+        ).scalars().all()
+        if not rows:
+            emp = s.get(Empresa, empresa_id)
+            if not emp:
+                return []
+            row = _garantir_classe_geral(s, empresa_id)
+            return [classe_orm_to_domain(row)]
+        return [classe_orm_to_domain(r) for r in rows]
+
+
+def get_classe(classe_id: int) -> Optional[ClasseProduto]:
+    with session_scope() as s:
+        row = s.get(ClasseProdutoORM, classe_id)
+        return classe_orm_to_domain(row) if row else None
+
+
+def criar_classe(empresa_id: int, classe: ClasseProduto) -> ClasseProduto:
+    nome = (classe.nome or "").strip()
+    if not nome:
+        raise ValueError("Nome da classe é obrigatório.")
+    with session_scope() as s:
+        emp = s.get(Empresa, empresa_id)
+        if not emp:
+            raise ValueError("Empresa não encontrada.")
+        existe = s.execute(
+            select(ClasseProdutoORM).where(
+                ClasseProdutoORM.empresa_id == empresa_id,
+                ClasseProdutoORM.nome == nome,
+            )
+        ).scalar_one_or_none()
+        if existe:
+            raise ValueError(f"Já existe uma classe com o nome '{nome}' nesta empresa.")
+
+        row = ClasseProdutoORM(empresa_id=empresa_id)
+        classe.nome = nome
+        aplicar_classe_no_orm(row, classe)
+        s.add(row)
+        s.flush()
+        return classe_orm_to_domain(row)
+
+
+def atualizar_classe(classe_id: int, classe: ClasseProduto) -> ClasseProduto:
+    nome = (classe.nome or "").strip()
+    if not nome:
+        raise ValueError("Nome da classe é obrigatório.")
+    with session_scope() as s:
+        row = s.get(ClasseProdutoORM, classe_id)
+        if not row:
+            raise ValueError("Classe não encontrada.")
+        conflito = s.execute(
+            select(ClasseProdutoORM).where(
+                ClasseProdutoORM.empresa_id == row.empresa_id,
+                ClasseProdutoORM.nome == nome,
+                ClasseProdutoORM.id != classe_id,
+            )
+        ).scalar_one_or_none()
+        if conflito:
+            raise ValueError(f"Já existe uma classe com o nome '{nome}' nesta empresa.")
+        classe.nome = nome
+        aplicar_classe_no_orm(row, classe)
+        s.flush()
+        return classe_orm_to_domain(row)
+
+
+def remover_classe(classe_id: int) -> None:
+    """Remove a classe. Se houver produtos vinculados, realoca-os para 'Geral'
+    da mesma empresa antes de deletar. Não permite remover a última classe
+    nem a própria classe 'Geral'."""
+    with session_scope() as s:
+        row = s.get(ClasseProdutoORM, classe_id)
+        if not row:
+            return
+        outras = s.execute(
+            select(ClasseProdutoORM).where(
+                ClasseProdutoORM.empresa_id == row.empresa_id,
+                ClasseProdutoORM.id != classe_id,
+            )
+        ).scalars().all()
+        if not outras:
+            raise ValueError(
+                "Não é possível remover a última classe da empresa."
+            )
+        if (row.nome or "").strip().lower() == "geral":
+            raise ValueError(
+                "Não é possível remover a classe 'Geral' "
+                "(usada como destino padrão)."
+            )
+        geral = _garantir_classe_geral(s, row.empresa_id)
+        s.execute(
+            ProdutoORM.__table__.update()
+            .where(ProdutoORM.classe_id == classe_id)
+            .values(classe_id=geral.id)
+        )
+        s.delete(row)
+
+
+def contar_produtos_por_classe(empresa_id: int) -> dict[int, int]:
+    """Retorna ``{classe_id: qtd_produtos}`` para a empresa."""
+    with session_scope() as s:
+        rows = s.execute(
+            select(ProdutoORM.classe_id, func.count(ProdutoORM.id))
+            .where(ProdutoORM.empresa_id == empresa_id)
+            .group_by(ProdutoORM.classe_id)
+        ).all()
+        return {int(cid): int(qtd) for cid, qtd in rows if cid is not None}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Preço praticado por (produto, canal)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -521,12 +658,26 @@ def listar_produtos(empresa_id: int) -> list[tuple[int, Produto]]:
 
 
 def upsert_produto(empresa_id: int, produto: Produto) -> int:
-    """Insere ou atualiza um produto e retorna seu id persistido."""
+    """Insere ou atualiza um produto e retorna seu id persistido.
+
+    Sempre garante que ``classe_id`` seja válida para a empresa: caso o produto
+    não tenha classe informada ou aponte para uma classe de outra empresa, cai
+    automaticamente na classe "Geral" da empresa.
+    """
     codigo = (produto.codigo_interno or "").strip()
     if not codigo:
         raise ValueError("Produto sem código interno.")
 
     with session_scope() as s:
+        classe_id = produto.classe_id
+        if classe_id is not None:
+            classe_row = s.get(ClasseProdutoORM, int(classe_id))
+            if classe_row is None or classe_row.empresa_id != empresa_id:
+                classe_id = None
+        if classe_id is None:
+            classe_id = _garantir_classe_geral(s, empresa_id).id
+        produto.classe_id = int(classe_id)
+
         row = s.execute(
             select(ProdutoORM).where(
                 ProdutoORM.empresa_id == empresa_id,
@@ -539,6 +690,9 @@ def upsert_produto(empresa_id: int, produto: Produto) -> int:
         aplicar_produto_no_orm(row, produto)
         sincronizar_vinculos(row, produto)
         s.flush()
+        # Sincroniza classe_nome no dataclass (conveniência para a UI).
+        if row.classe is not None:
+            produto.classe_nome = row.classe.nome or ""
         return int(row.id)
 
 

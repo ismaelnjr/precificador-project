@@ -33,7 +33,7 @@ def render() -> None:
                 "Como administrador, você pode cadastrar uma empresa em "
                 "**🛠️ Administração** → aba *Empresas*."
             )
-        if st.button("🚪 Sair", use_container_width=True):
+        if st.button("🚪 Sair", width="stretch"):
             sessao.logout()
             st.rerun()
         return
@@ -47,7 +47,7 @@ def render() -> None:
                 st.caption(f"CNPJ: `{formatar_cnpj(emp['cnpj'])}`")
             with c2:
                 if st.button("Acessar", key=f"sel_emp_{emp['id']}",
-                              type="primary", use_container_width=True):
+                              type="primary", width="stretch"):
                     try:
                         sessao.selecionar_empresa(emp)
                         st.rerun()
@@ -55,6 +55,6 @@ def render() -> None:
                         st.error(str(e))
 
     st.divider()
-    if st.button("🚪 Sair", use_container_width=True):
+    if st.button("🚪 Sair", width="stretch"):
         sessao.logout()
         st.rerun()

@@ -5,9 +5,10 @@ Converte entre entidades ORM (``db/models.py``) e dataclasses de domínio
 """
 from __future__ import annotations
 
-from models.produto import CanalVenda, ParametrosGlobais, Produto
+from models.produto import CanalVenda, ClasseProduto, ParametrosGlobais, Produto
 from db.models import (
     CanalVendaORM,
+    ClasseProdutoORM,
     ParametrosGlobaisORM,
     ProdutoORM,
     VinculoFornecedorORM,
@@ -74,12 +75,27 @@ def aplicar_canal_no_orm(row: CanalVendaORM, c: CanalVenda) -> None:
         setattr(row, campo, getattr(c, campo))
 
 
+# ─── ClasseProduto ────────────────────────────────────────────────────────────
+
+_CAMPOS_CLASSE = ("nome", "ativo")
+
+
+def classe_orm_to_domain(row: ClasseProdutoORM) -> ClasseProduto:
+    return ClasseProduto(id=row.id, nome=row.nome, ativo=bool(row.ativo))
+
+
+def aplicar_classe_no_orm(row: ClasseProdutoORM, c: ClasseProduto) -> None:
+    for campo in _CAMPOS_CLASSE:
+        setattr(row, campo, getattr(c, campo))
+
+
 # ─── Produto ──────────────────────────────────────────────────────────────────
 
 _CAMPOS_PRODUTO_SIMPLES = (
     "codigo_interno",
     "descricao",
     "ncm",
+    "classe_id",
     "qtd",
     "custo_unitario",
     "ipi_unitario",
@@ -113,7 +129,14 @@ def produto_orm_to_domain(row: ProdutoORM) -> Produto:
         }
         for v in (row.vinculos or [])
     ]
-    return Produto(vinculos_fornecedor=vinculos, **kwargs)
+    classe_nome = ""
+    if getattr(row, "classe", None) is not None:
+        classe_nome = row.classe.nome or ""
+    return Produto(
+        vinculos_fornecedor=vinculos,
+        classe_nome=classe_nome,
+        **kwargs,
+    )
 
 
 def aplicar_produto_no_orm(row: ProdutoORM, p: Produto) -> None:

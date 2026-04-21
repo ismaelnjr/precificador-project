@@ -12,7 +12,8 @@ import pandas as pd
 from models.produto import ResultadoPrecificacao
 from parsers.importacao import gerar_template_precos_xlsx, parse_xlsx_precos
 from utils.estado import (
-    aplicar_preco_praticado, canal_ativo, recalcular_resultados,
+    aplicar_preco_praticado, canal_ativo, listar_classes,
+    recalcular_resultados,
 )
 from utils.exportar import exportar_resultado_xlsx
 from auth import sessao
@@ -38,15 +39,40 @@ def render() -> None:
         f"Custo Fixo/Pedido R$ {float(canal.custo_fixo_total_pedido):.2f}"
     )
 
-    resultados: list[ResultadoPrecificacao] = st.session_state["resultados"]
+    resultados_all: list[ResultadoPrecificacao] = st.session_state["resultados"]
 
-    if not resultados:
+    if not resultados_all:
         st.info("Nenhum resultado ainda. Cadastre produtos (com custo > 0) "
                 "e ajuste os parâmetros.")
         if st.button("Ir para Importar →"):
             st.session_state["pagina"] = "📦 Importar Produtos"
             st.rerun()
         st.stop()
+
+    # ── Filtro por Classe ────────────────────────────────────────────────────
+    classes_disponiveis = listar_classes()
+    resultados: list[ResultadoPrecificacao] = resultados_all
+    if classes_disponiveis:
+        nomes_classes = sorted({
+            r.produto.classe_nome for r in resultados_all
+            if r.produto.classe_nome
+        })
+        if nomes_classes:
+            filtro = st.multiselect(
+                "Filtrar por classe", nomes_classes, default=[],
+                key="precif_filtro_classes",
+                placeholder="Mostrar todas as classes",
+            )
+            if filtro:
+                resultados = [r for r in resultados_all
+                              if r.produto.classe_nome in filtro]
+                if not resultados:
+                    st.info("Nenhum produto bate com o filtro de classes.")
+                    st.stop()
+                st.caption(
+                    f"Exibindo **{len(resultados)}** de "
+                    f"{len(resultados_all)} produto(s) após filtro de classe."
+                )
 
     ok   = sum(1 for r in resultados if "✅" in r.status)
     warn = sum(1 for r in resultados if "⚠️" in r.status)
@@ -81,7 +107,7 @@ def render() -> None:
                     data=tpl_precos,
                     file_name=f"precos_praticados_{slug_canal}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
+                    width="stretch",
                 )
             except Exception as e:
                 st.error(f"Erro ao gerar template: {e}")
@@ -92,7 +118,7 @@ def render() -> None:
                 type=["xlsx"], key="upload_precos_praticados",
             )
             if f_precos and st.button(
-                "📥 Importar Preços", type="primary", use_container_width=True,
+                "📥 Importar Preços", type="primary", width="stretch",
                 key="btn_importar_precos",
             ):
                 precos, avisos = parse_xlsx_precos(f_precos.read())
@@ -192,7 +218,7 @@ def render() -> None:
         df,
         column_config=col_config,
         disabled=[c for c in df.columns if c != "Preço Praticado (R$)"],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         key="editor_preco",
     )
@@ -239,7 +265,7 @@ def render() -> None:
             df_custo = pd.DataFrame(
                 [{"Componente": k, "Valor (R$)": v} for k, v in custo_data.items() if v != 0]
             )
-            st.dataframe(df_custo, use_container_width=True, hide_index=True)
+            st.dataframe(df_custo, width="stretch", hide_index=True)
 
         with c2:
             st.markdown("**Decomposição do Preço de Venda**")
@@ -258,7 +284,7 @@ def render() -> None:
                   "% do Preço": f"{v/preco*100:.1f}%" if preco > 0 else "—"}
                  for k, v in decomp.items()]
             )
-            st.dataframe(df_decomp, use_container_width=True, hide_index=True)
+            st.dataframe(df_decomp, width="stretch", hide_index=True)
 
             st.metric("Preço Praticado", f"R$ {preco:.2f}")
             st.metric("Margem Líquida Real",
@@ -280,7 +306,7 @@ def render() -> None:
                 data=xlsx_bytes,
                 file_name=f"precificacao_{slug_canal}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+                width="stretch",
             )
         except Exception as e:
             st.error(f"Erro ao exportar: {e}")
@@ -291,5 +317,5 @@ def render() -> None:
             data=csv.encode("utf-8-sig"),
             file_name=f"precificacao_{slug_canal}.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
         )

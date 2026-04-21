@@ -8,6 +8,7 @@ Entidades:
     UsuarioEmpresa      — vínculos N:N (quais empresas o usuário pode acessar)
     ParametrosGlobais   — 1:1 com Empresa (regime tributário + defaults fiscais)
     CanalVenda          — N:1 com Empresa (taxas/custos/margem por canal)
+    ClasseProduto       — N:1 com Empresa (categoria organizacional de produtos)
     Produto             — N:1 com Empresa (UNIQUE (empresa_id, codigo_interno))
     ProdutoCanalPreco   — N:1 com Produto e Canal (preço praticado por canal)
     VinculoFornecedor   — N:1 com Produto
@@ -75,6 +76,11 @@ class Empresa(Base):
         lazy="selectin",
     )
     canais: Mapped[List["CanalVendaORM"]] = relationship(
+        back_populates="empresa",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    classes: Mapped[List["ClasseProdutoORM"]] = relationship(
         back_populates="empresa",
         cascade="all, delete-orphan",
         lazy="selectin",
@@ -190,6 +196,34 @@ class CanalVendaORM(Base):
     )
 
 
+# ─── Classe de Produto (por empresa) ──────────────────────────────────────────
+
+class ClasseProdutoORM(Base):
+    """
+    Categoria organizacional de produtos (por empresa). Usada apenas para
+    filtrar, agrupar relatórios e exportar de forma segmentada — não participa
+    de herança fiscal.
+    """
+    __tablename__ = "classe_produto"
+    __table_args__ = (
+        UniqueConstraint("empresa_id", "nome", name="uq_classe_empresa_nome"),
+    )
+
+    id:         Mapped[int] = mapped_column(Integer, primary_key=True)
+    empresa_id: Mapped[int] = mapped_column(
+        ForeignKey("empresa.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+
+    nome:       Mapped[str]  = mapped_column(String(120), nullable=False)
+    ativo:      Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+    empresa: Mapped["Empresa"] = relationship(back_populates="classes")
+    produtos: Mapped[List["ProdutoORM"]] = relationship(back_populates="classe")
+
+
 # ─── Produto ──────────────────────────────────────────────────────────────────
 
 class ProdutoORM(Base):
@@ -201,6 +235,10 @@ class ProdutoORM(Base):
     id:         Mapped[int] = mapped_column(Integer, primary_key=True)
     empresa_id: Mapped[int] = mapped_column(
         ForeignKey("empresa.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    classe_id:  Mapped[int] = mapped_column(
+        ForeignKey("classe_produto.id", ondelete="RESTRICT"),
+        nullable=False, index=True,
     )
 
     codigo_interno: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -235,6 +273,9 @@ class ProdutoORM(Base):
     observacoes: Mapped[str] = mapped_column(String(1000), default="")
 
     empresa: Mapped["Empresa"] = relationship(back_populates="produtos")
+    classe:  Mapped["ClasseProdutoORM"] = relationship(
+        back_populates="produtos", lazy="joined",
+    )
     vinculos: Mapped[List["VinculoFornecedorORM"]] = relationship(
         back_populates="produto",
         cascade="all, delete-orphan",

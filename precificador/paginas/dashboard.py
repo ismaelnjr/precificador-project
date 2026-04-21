@@ -7,7 +7,7 @@ que derivam dele.
 import streamlit as st
 import pandas as pd
 
-from utils.estado import canal_ativo
+from utils.estado import canal_ativo, listar_classes
 
 
 def render() -> None:
@@ -21,10 +21,43 @@ def render() -> None:
 
     st.caption(f"Canal ativo: **{canal.nome}**")
 
-    resultados = st.session_state["resultados"]
-    if not resultados:
+    resultados_all = st.session_state["resultados"]
+    if not resultados_all:
         st.info("Sem dados ainda. Cadastre produtos primeiro.")
         st.stop()
+
+    # ── Filtro por Classe ────────────────────────────────────────────────────
+    classes_disponiveis = listar_classes()
+    classe_nome_por_id = {c.id: c.nome for c in classes_disponiveis if c.id is not None}
+    resultados = resultados_all
+
+    def _nome_classe_resultado(r) -> str:
+        return (
+            (r.produto.classe_nome or "").strip()
+            or (classe_nome_por_id.get(r.produto.classe_id) or "").strip()
+        )
+
+    if classes_disponiveis:
+        classes_filtro = [c for c in classes_disponiveis if c.ativo] or classes_disponiveis
+        nomes_classes = sorted({
+            (c.nome or "").strip() for c in classes_filtro if (c.nome or "").strip()
+        })
+        if nomes_classes:
+            filtro = st.multiselect(
+                "Filtrar por classe", nomes_classes, default=[],
+                key="dashboard_filtro_classes",
+                placeholder="Considerar todas as classes",
+            )
+            if filtro:
+                resultados = [r for r in resultados_all
+                              if _nome_classe_resultado(r) in filtro]
+                if not resultados:
+                    st.info("Nenhum produto bate com o filtro de classes.")
+                    st.stop()
+                st.caption(
+                    f"Considerando **{len(resultados)}** de "
+                    f"{len(resultados_all)} produto(s) após o filtro."
+                )
 
     ok   = sum(1 for r in resultados if "✅" in r.status)
     warn = sum(1 for r in resultados if "⚠️" in r.status)
@@ -62,7 +95,7 @@ def render() -> None:
         "Status": ["✅ OK", "⚠️ Abaixo da Meta", "🔴 Prejuízo"],
         "Qtd":    [ok, warn, bad],
     })
-    st.bar_chart(df_status.set_index("Status"), use_container_width=True, height=200)
+    st.bar_chart(df_status.set_index("Status"), width="stretch", height=200)
 
     st.divider()
 
@@ -73,7 +106,57 @@ def render() -> None:
         "Margem Real (%)": [float(r.margem_liquida_real)*100 for r in resultados],
         "Meta (%)":        [float(r.margem_desejada)*100     for r in resultados],
     }).set_index("Produto")
-    st.bar_chart(df_mg, use_container_width=True, height=300)
+    st.bar_chart(df_mg, width="stretch", height=300)
+
+    st.divider()
+
+    # ── Agregado por Classe ──────────────────────────────────────────────────
+    st.subheader("Agregado por Classe")
+    classes_presentes = sorted({
+        _nome_classe_resultado(r) or "(sem classe)" for r in resultados
+    })
+    if len(classes_presentes) <= 1:
+        st.caption("Todos os produtos pertencem à mesma classe.")
+    rows_cls = []
+    for cls in classes_presentes:
+        subset = [r for r in resultados
+                  if (_nome_classe_resultado(r) or "(sem classe)") == cls]
+        if not subset:
+            continue
+        n = len(subset)
+        n_ok   = sum(1 for r in subset if "✅" in r.status)
+        n_warn = sum(1 for r in subset if "⚠️" in r.status)
+        n_bad  = sum(1 for r in subset if "🔴" in r.status)
+        rows_cls.append({
+            "Classe":              cls,
+            "Qtd":                 n,
+            "Custo Médio (R$)":    round(sum(float(r.custo_final) for r in subset) / n, 2),
+            "Preço Médio (R$)":    round(sum(float(r.preco_praticado) for r in subset) / n, 2),
+            "Margem Real Média":   round(sum(float(r.margem_liquida_real) for r in subset) / n * 100, 2),
+            "Markup Médio":        round(sum(float(r.markup_sobre_custo) for r in subset) / n * 100, 2),
+            "✅ OK":                n_ok,
+            "⚠️ Abaixo":           n_warn,
+            "🔴 Prejuízo":         n_bad,
+        })
+    if rows_cls:
+        df_cls = pd.DataFrame(rows_cls)
+        st.dataframe(
+            df_cls,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Custo Médio (R$)":  st.column_config.NumberColumn(format="R$ %.2f"),
+                "Preço Médio (R$)":  st.column_config.NumberColumn(format="R$ %.2f"),
+                "Margem Real Média": st.column_config.NumberColumn(format="%.2f%%"),
+                "Markup Médio":      st.column_config.NumberColumn(format="%.2f%%"),
+            },
+        )
+        if len(rows_cls) > 1:
+            df_chart = (
+                df_cls[["Classe", "Margem Real Média"]]
+                .set_index("Classe")
+            )
+            st.bar_chart(df_chart, width="stretch", height=260)
 
     st.divider()
 
@@ -101,4 +184,4 @@ def render() -> None:
          "% do Preço": f"{v/preco_med*100:.1f}%"}
         for k, v in componentes.items()
     ])
-    st.dataframe(df_comp, use_container_width=True, hide_index=True)
+    st.dataframe(df_comp, width="stretch", hide_index=True)
