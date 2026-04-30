@@ -212,18 +212,21 @@ with st.sidebar:
 
     st.divider()
 
-    pagina_atual = st.session_state.get("pagina", ROTULOS_PAGINAS[0])
-    if pagina_atual not in ROTULOS_PAGINAS:
-        pagina_atual = ROTULOS_PAGINAS[0]
+    pagina_alvo = st.session_state.pop("_ir_para_pagina", None)
+    if pagina_alvo in ROTULOS_PAGINAS:
+        st.session_state["pagina"] = pagina_alvo
+
+    if ("pagina" not in st.session_state
+            or st.session_state["pagina"] not in ROTULOS_PAGINAS):
+        st.session_state["pagina"] = ROTULOS_PAGINAS[0]
 
     with st.expander("📂 Menu", expanded=True):
         pagina = st.radio(
             "Navegação",
             ROTULOS_PAGINAS,
-            index=ROTULOS_PAGINAS.index(pagina_atual),
+            key="pagina",
             label_visibility="collapsed",
         )
-        st.session_state["pagina"] = pagina
 
     st.divider()
     n_prod = len(st.session_state.get("produtos", {}))

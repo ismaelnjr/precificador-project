@@ -5,9 +5,17 @@ já que são os resultados já calculados (``st.session_state['resultados']``)
 que derivam dele.
 """
 import streamlit as st
-import pandas as pd
 
+from auth import sessao
+from utils.dashboard_relatorio import (
+    DashboardRelatorioMeta,
+    build_dashboard_pdf_bytes,
+    computar_dashboard_relatorio,
+    nome_arquivo_pdf_dashboard,
+    nome_classe_resultado,
+)
 from utils.estado import canal_ativo, listar_classes
+from utils.formato import formatar_cnpj
 
 
 def render() -> None:
@@ -26,31 +34,29 @@ def render() -> None:
         st.info("Sem dados ainda. Cadastre produtos primeiro.")
         st.stop()
 
-    # ── Filtro por Classe ────────────────────────────────────────────────────
     classes_disponiveis = listar_classes()
     classe_nome_por_id = {c.id: c.nome for c in classes_disponiveis if c.id is not None}
     resultados = resultados_all
 
-    def _nome_classe_resultado(r) -> str:
-        return (
-            (r.produto.classe_nome or "").strip()
-            or (classe_nome_por_id.get(r.produto.classe_id) or "").strip()
-        )
+    filtro_classes_sel: list[str] = []
 
+    # ── Filtro por Classe ────────────────────────────────────────────────────
     if classes_disponiveis:
         classes_filtro = [c for c in classes_disponiveis if c.ativo] or classes_disponiveis
         nomes_classes = sorted({
             (c.nome or "").strip() for c in classes_filtro if (c.nome or "").strip()
         })
         if nomes_classes:
-            filtro = st.multiselect(
+            filtro_classes_sel = st.multiselect(
                 "Filtrar por classe", nomes_classes, default=[],
                 key="dashboard_filtro_classes",
                 placeholder="Considerar todas as classes",
             )
-            if filtro:
-                resultados = [r for r in resultados_all
-                              if _nome_classe_resultado(r) in filtro]
+            if filtro_classes_sel:
+                resultados = [
+                    r for r in resultados_all
+                    if nome_classe_resultado(r, classe_nome_por_id) in filtro_classes_sel
+                ]
                 if not resultados:
                     st.info("Nenhum produto bate com o filtro de classes.")
                     st.stop()
@@ -62,23 +68,27 @@ def render() -> None:
     # ── Filtro por Produto ───────────────────────────────────────────────────
     opcoes_produtos = sorted(
         resultados,
-        key=lambda r: ((r.produto.codigo_interno or "").lower(), (r.produto.descricao or "").lower()),
+        key=lambda r: (
+            (r.produto.codigo_interno or "").lower(),
+            (r.produto.descricao or "").lower(),
+        ),
     )
     mapa_produtos = {
         f"{r.produto.codigo_interno} — {(r.produto.descricao or '').strip() or '(sem descrição)'}":
         r.produto.codigo_interno
         for r in opcoes_produtos
     }
+    filtro_produtos_sel: list[str] = []
     if mapa_produtos:
-        filtro_produtos = st.multiselect(
+        filtro_produtos_sel = st.multiselect(
             "Filtrar por produto",
             list(mapa_produtos.keys()),
             default=[],
             key="dashboard_filtro_produtos",
             placeholder="Considerar todos os produtos",
         )
-        if filtro_produtos:
-            codigos_sel = {mapa_produtos[label] for label in filtro_produtos}
+        if filtro_produtos_sel:
+            codigos_sel = {mapa_produtos[label] for label in filtro_produtos_sel}
             resultados = [
                 r for r in resultados
                 if r.produto.codigo_interno in codigos_sel
@@ -91,17 +101,59 @@ def render() -> None:
                 f"{len(resultados_all)} produto(s) após os filtros aplicados."
             )
 
-    ok   = sum(1 for r in resultados if "✅" in r.status)
-    warn = sum(1 for r in resultados if "⚠️" in r.status)
-    bad  = sum(1 for r in resultados if "🔴" in r.status)
+    texto_filtro_classes = (
+        "Todas as classes"
+        if not filtro_classes_sel
+        else ", ".join(sorted(filtro_classes_sel))
+    )
+    texto_filtro_produtos = (
+        "Todos os produtos"
+        if not filtro_produtos_sel
+        else (
+            f"{len(filtro_produtos_sel)} selecionado(s): "
+            + "; ".join(filtro_produtos_sel[:15])
+            + (" …" if len(filtro_produtos_sel) > 15 else "")
+        )
+    )
 
-    avg_custo   = sum(float(r.custo_final)         for r in resultados) / len(resultados)
-    avg_preco   = sum(float(r.preco_praticado)     for r in resultados) / len(resultados)
-    avg_margem  = sum(float(r.margem_liquida_real) for r in resultados) / len(resultados)
-    avg_markup  = sum(float(r.markup_sobre_custo)  for r in resultados) / len(resultados)
+    relatorio = computar_dashboard_relatorio(resultados, canal, classe_nome_por_id)
+
+    emp = sessao.get_empresa_atual() or {}
+    meta_pdf = DashboardRelatorioMeta(
+        empresa_nome=str(emp.get("nome") or ""),
+        empresa_cnpj=formatar_cnpj(emp.get("cnpj")) if emp.get("cnpj") else None,
+        canal_nome=canal.nome,
+        texto_filtro_classes=texto_filtro_classes,
+        texto_filtro_produtos=texto_filtro_produtos,
+        n_produtos_base=len(resultados_all),
+    )
+
+    try:
+        pdf_bytes = build_dashboard_pdf_bytes(meta_pdf, relatorio)
+    except Exception as e:
+        pdf_bytes = None
+        st.error(f"Erro ao montar relatório PDF: {e}")
+
+    if pdf_bytes:
+        st.download_button(
+            "📄 Gerar relatório PDF",
+            data=pdf_bytes,
+            file_name=nome_arquivo_pdf_dashboard(canal.nome),
+            mime="application/pdf",
+            width="stretch",
+            key="dashboard_download_pdf",
+        )
+
+    ok = relatorio.ok
+    warn = relatorio.warn
+    bad = relatorio.bad
+    avg_custo = relatorio.avg_custo
+    avg_preco = relatorio.avg_preco
+    avg_margem = relatorio.avg_margem
+    avg_markup = relatorio.avg_markup
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Produtos",         len(resultados))
+    c1.metric("Produtos",         relatorio.n_produtos)
     c2.metric("✅ OK",             ok)
     c3.metric("⚠️ Abaixo da Meta", warn)
     c4.metric("🔴 Prejuízo",       bad)
@@ -110,12 +162,10 @@ def render() -> None:
 
     st.divider()
 
-    meta_margem = float(canal.margem_lucro_desejada) / 100
-    c1, c2 = st.columns(2)
     with c1:
         st.metric(
             "Margem Líquida Média", f"{avg_margem*100:.1f}%",
-            delta=f"{(avg_margem - meta_margem)*100:.1f}% vs meta do canal",
+            delta=f"{relatorio.delta_margem_vs_meta_pct:.1f}% vs meta do canal",
         )
     with c2:
         st.metric("Markup Médio s/ Custo", f"{avg_markup*100:.1f}%")
@@ -123,55 +173,28 @@ def render() -> None:
     st.divider()
 
     st.subheader("Distribuição por Status")
-    df_status = pd.DataFrame({
-        "Status": ["✅ OK", "⚠️ Abaixo da Meta", "🔴 Prejuízo"],
-        "Qtd":    [ok, warn, bad],
-    })
+    df_status = relatorio.df_status
     st.bar_chart(df_status.set_index("Status"), width="stretch", height=200)
 
     st.divider()
 
     st.subheader("Margem Líquida por Produto")
-    df_mg = pd.DataFrame({
-        "Produto": [f"{r.produto.codigo_interno} — {r.produto.descricao[:30]}"
-                    for r in resultados],
-        "Margem Real (%)": [float(r.margem_liquida_real)*100 for r in resultados],
-        "Meta (%)":        [float(r.margem_desejada)*100     for r in resultados],
-    }).set_index("Produto")
+    df_mg = relatorio.df_margem_produto.set_index("Produto")[
+        ["Margem Real (%)", "Meta (%)"]
+    ]
     st.bar_chart(df_mg, width="stretch", height=300)
 
     st.divider()
 
-    # ── Agregado por Classe ──────────────────────────────────────────────────
     st.subheader("Agregado por Classe")
     classes_presentes = sorted({
-        _nome_classe_resultado(r) or "(sem classe)" for r in resultados
+        nome_classe_resultado(r, classe_nome_por_id) or "(sem classe)"
+        for r in resultados
     })
     if len(classes_presentes) <= 1:
         st.caption("Todos os produtos pertencem à mesma classe.")
-    rows_cls = []
-    for cls in classes_presentes:
-        subset = [r for r in resultados
-                  if (_nome_classe_resultado(r) or "(sem classe)") == cls]
-        if not subset:
-            continue
-        n = len(subset)
-        n_ok   = sum(1 for r in subset if "✅" in r.status)
-        n_warn = sum(1 for r in subset if "⚠️" in r.status)
-        n_bad  = sum(1 for r in subset if "🔴" in r.status)
-        rows_cls.append({
-            "Classe":              cls,
-            "Qtd":                 n,
-            "Custo Médio (R$)":    round(sum(float(r.custo_final) for r in subset) / n, 2),
-            "Preço Médio (R$)":    round(sum(float(r.preco_praticado) for r in subset) / n, 2),
-            "Margem Real Média":   round(sum(float(r.margem_liquida_real) for r in subset) / n * 100, 2),
-            "Markup Médio":        round(sum(float(r.markup_sobre_custo) for r in subset) / n * 100, 2),
-            "✅ OK":                n_ok,
-            "⚠️ Abaixo":           n_warn,
-            "🔴 Prejuízo":         n_bad,
-        })
-    if rows_cls:
-        df_cls = pd.DataFrame(rows_cls)
+    df_cls = relatorio.df_classe
+    if df_cls is not None and not df_cls.empty:
         st.dataframe(
             df_cls,
             width="stretch",
@@ -183,7 +206,7 @@ def render() -> None:
                 "Markup Médio":      st.column_config.NumberColumn(format="%.2f%%"),
             },
         )
-        if len(rows_cls) > 1:
+        if len(df_cls) > 1:
             df_chart = (
                 df_cls[["Classe", "Margem Real Média"]]
                 .set_index("Classe")
@@ -193,31 +216,5 @@ def render() -> None:
     st.divider()
 
     st.subheader("Composição Média do Preço de Venda")
-    preco_med = avg_preco if avg_preco > 0 else 1
-    imposto_medio = (
-        sum(float(r.perc_impostos) for r in resultados) / len(resultados)
-    )
-    deducoes_medias = (
-        imposto_medio
-        + float(canal.perc_operacional_venda)
-        + float(canal.perc_financeiro)
-        + float(canal.perc_devolucao)
-    )
-
-    componentes = {
-        "Custo do Produto":  avg_custo,
-        "Custos Operac.":    float(canal.custo_fixo_total_pedido),
-        "Impostos":          preco_med * imposto_medio,
-        "Comissão+Gateway":  preco_med * float(canal.perc_operacional_venda),
-        "Custo Financeiro":  preco_med * float(canal.perc_financeiro),
-        "Devoluções":        preco_med * float(canal.perc_devolucao),
-        "Lucro Líquido":     preco_med - avg_custo
-                             - float(canal.custo_fixo_total_pedido)
-                             - preco_med * deducoes_medias,
-    }
-    df_comp = pd.DataFrame([
-        {"Componente": k, "R$ Médio": round(v, 2),
-         "% do Preço": f"{v/preco_med*100:.1f}%"}
-        for k, v in componentes.items()
-    ])
+    df_comp = relatorio.df_composicao
     st.dataframe(df_comp, width="stretch", hide_index=True)

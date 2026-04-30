@@ -46,7 +46,8 @@ def render() -> None:
         st.info("Nenhum resultado ainda. Cadastre produtos (com custo > 0) "
                 "e ajuste os parâmetros.")
         if st.button("Ir para Importar →"):
-            st.session_state["pagina"] = "📦 Importar Produtos"
+            st.session_state["_ir_para_pagina"] = "📦 Importar Produtos"
+            st.rerun()
         st.stop()
 
     # ── Filtro por Classe ────────────────────────────────────────────────────
