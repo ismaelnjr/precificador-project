@@ -66,11 +66,57 @@ st.markdown("""
         min-width: 320px !important;
         max-width: 320px !important;
     }
-    [data-testid="stSidebar"] * { color: #FFFFFF !important; }
-    [data-testid="stSidebar"] .stRadio label { font-size: 13px; padding: 3px 0; }
+    /* Mantem textos da sidebar claros, sem forcar cor em widgets internos. */
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3,
+    [data-testid="stSidebar"] h4,
+    [data-testid="stSidebar"] h5,
+    [data-testid="stSidebar"] h6,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] small,
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
+    [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+        color: #FFFFFF !important;
+    }
+    /* Garante legibilidade de opcoes dos controles em ambos os temas. */
+    [data-testid="stSidebar"] [data-baseweb="select"] *,
+    [data-testid="stSidebar"] input,
+    [data-testid="stSidebar"] textarea {
+        color: inherit !important;
+    }
+    [data-testid="stSidebar"] .stRadio label {
+        font-size: 13px;
+        padding: 3px 0;
+        color: #FFFFFF !important;
+    }
     [data-testid="stSidebar"] .stRadio label p {
         font-size: 13px !important;
         white-space: nowrap;
+        color: #FFFFFF !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stExpander"] summary,
+    [data-testid="stSidebar"] [data-testid="stExpander"] summary * {
+        color: #FFFFFF !important;
+    }
+    [data-testid="stSidebar"] .stButton > button:not([kind="primary"]) {
+        background: #FFFFFF !important;
+        color: #1F3864 !important;
+        border: 1px solid #d6dcf0 !important;
+        font-weight: 600 !important;
+    }
+    [data-testid="stSidebar"] .stButton > button:not([kind="primary"]) p,
+    [data-testid="stSidebar"] .stButton > button:not([kind="primary"]) span {
+        color: #1F3864 !important;
+    }
+    [data-testid="stSidebar"] .stButton > button[kind="primary"] p,
+    [data-testid="stSidebar"] .stButton > button[kind="primary"] span {
+        color: #FFFFFF !important;
+    }
+    [data-testid="stSidebar"] .stButton > button:disabled,
+    [data-testid="stSidebar"] .stButton > button[disabled] {
+        color: #6b7280 !important;
+        opacity: 1 !important;
     }
 
     [data-testid="stMetric"] {
